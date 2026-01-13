@@ -12,34 +12,53 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_data(worksheet):
     try:
-        return conn.read(worksheet=worksheet, ttl=0)
-    except:
+        # DÜZƏLİŞ: ttl=5 etdik. Bu, hər sorğu arasında 5 saniyə fasilə yaradır
+        # və Google limitinin dolmasının qarşısını alır.
+        return conn.read(worksheet=worksheet, ttl=5)
+    except Exception:
         return pd.DataFrame()
 
 def add_rows_bulk(worksheet, new_data_list):
-    df = get_data(worksheet)
+    # Yazma əməliyyatı zamanı məlumatı təzə oxumaq lazımdır, ona görə burada ttl=0 qala bilər
+    # və ya cache-i təmizləmək olar.
+    try:
+        df = conn.read(worksheet=worksheet, ttl=0)
+    except:
+        df = pd.DataFrame()
+        
     new_df = pd.DataFrame(new_data_list)
     updated_df = pd.concat([df, new_df], ignore_index=True)
     conn.update(worksheet=worksheet, data=updated_df)
+    st.cache_data.clear() # Cache-i təmizləyirik ki, yenilik görünsün
 
 def add_row(worksheet, new_data_dict):
     add_rows_bulk(worksheet, [new_data_dict])
 
 def update_order_stage(order_id, new_status, winner, price):
-    df = get_data("orders")
+    try:
+        df = conn.read(worksheet="orders", ttl=0)
+    except:
+        return
+
     mask = df['id'] == order_id
     if mask.any():
         df.loc[mask, 'status'] = new_status
         df.loc[mask, 'winner'] = winner
         df.loc[mask, 'final_price'] = price
         conn.update(worksheet="orders", data=df)
+        st.cache_data.clear()
 
 def update_user_password(username, new_password):
-    df = get_data("users")
+    try:
+        df = conn.read(worksheet="users", ttl=0)
+    except:
+        return
+
     mask = df['username'] == username
     if mask.any():
         df.loc[mask, 'password'] = new_password
         conn.update(worksheet="users", data=df)
+        st.cache_data.clear()
     else:
         pass 
 
@@ -50,23 +69,15 @@ def find_column_by_keyword(columns, keywords):
                 return col
     return None
 
-# --- YENİ: Başlıq Sətrini Avtomatik Tapan Funksiya ---
+# --- Başlıq Sətrini Avtomatik Tapan Funksiya ---
 def detect_header_row(df_preview):
-    """
-    İlk sətirləri yoxlayır, əgər 'Description' və 'Qty' kimi 
-    açar sözləri eyni sətirdə görsə, o sətrin nömrəsini qaytarır.
-    """
     keywords = ['description', 'item', 'mal', 'ad', 'product', 'qty', 'quantity', 'say', 'amount']
-    
     for idx, row in df_preview.iterrows():
-        # Sətri mətnə çevirib kiçik hərflə yoxlayırıq
         row_text = " ".join(row.astype(str)).lower()
-        
-        # Əgər sətirdə ən azı 2 açar söz varsa, deməli başlıq budur
         match_count = sum(1 for k in keywords if k in row_text)
         if match_count >= 2:
             return idx
-    return 0 # Tapmasa 0 qaytarır
+    return 0
 
 # --- SESSİYA ---
 if 'logged_in' not in st.session_state:
@@ -118,13 +129,16 @@ with st.sidebar:
             else:
                 password = st.text_input("Şifrənizi yazın", type="password")
                 if st.button("Daxil Ol 🚀"):
-                    user_record = users_df[users_df['username'] == selected_user].iloc[0]
-                    if str(user_record['password']).strip() == str(password).strip():
-                        st.session_state['logged_in'] = True
-                        st.session_state['current_user'] = selected_user
-                        st.rerun()
-                    else:
-                        st.error("Şifrə yanlışdır!")
+                    try:
+                        user_record = users_df[users_df['username'] == selected_user].iloc[0]
+                        if str(user_record['password']).strip() == str(password).strip():
+                            st.session_state['logged_in'] = True
+                            st.session_state['current_user'] = selected_user
+                            st.rerun()
+                        else:
+                            st.error("Şifrə yanlışdır!")
+                    except:
+                        st.error("Xəta oldu. Yenidən cəhd edin.")
     else:
         st.success(f"Xoş gəldin, **{st.session_state['current_user']}**")
         if st.button("Çıxış Et 🔒", type="primary"):
@@ -142,25 +156,23 @@ if st.session_state['logged_in']:
     if user == "Admin":
         st.info("🔧 Admin Paneli")
         
-        # --- EXCEL YÜKLƏMƏ (AVTOMATİK REJİM) ---
+        # --- EXCEL YÜKLƏMƏ (AVTOMATİK + MANUAL) ---
         with st.expander("📂 Excel-dən Yüklə (Avto-Detektor)", expanded=True):
             uploaded_file = st.file_uploader("Fayl Seç", type=["xlsx", "xls", "csv"])
             
-            # Default olaraq 0, amma fayl yüklənəndə dəyişəcək
             header_idx = 0 
             
             if uploaded_file:
                 try:
-                    # 1. Analiz üçün ilk 20 sətri oxuyuruq
+                    # 1. Analiz
                     if uploaded_file.name.endswith('.csv'):
                         df_preview = pd.read_csv(uploaded_file, header=None, nrows=20)
                     else:
                         df_preview = pd.read_excel(uploaded_file, header=None, nrows=20, engine='openpyxl')
                     
-                    # 2. Avtomatik sətri tapırıq
+                    # 2. Avtomatik sətri tap
                     detected_idx = detect_header_row(df_preview)
                     
-                    # İstifadəçiyə göstəririk (və dəyişməyə icazə veririk)
                     st.write(f"🤖 **Sistem təxmin etdi:** Başlıqlar **{detected_idx}**-ci sətirdədir.")
                     header_idx = st.number_input("Başlıq Sətri Nömrəsi (Düzəliş etmək istəsəniz):", min_value=0, value=int(detected_idx), step=1)
 
@@ -174,7 +186,6 @@ if st.session_state['logged_in']:
                     st.write("✅ **Cədvəl belə oxundu:**")
                     st.dataframe(df_final.head(3), height=100)
                     
-                    # Sütunları tapmaq
                     cols = df_final.columns.tolist()
                     def_name = find_column_by_keyword(cols, ["item", "description", "mal", "product", "ad"])
                     def_qty = find_column_by_keyword(cols, ["qty", "quantity", "say", "amount", "miqdar"])
