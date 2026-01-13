@@ -11,25 +11,21 @@ st.set_page_config(page_title="Global Tender Sistemi", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_data(worksheet):
-    """Məlumatları cədvəldən oxuyur"""
     try:
         return conn.read(worksheet=worksheet, ttl=0)
     except:
         return pd.DataFrame()
 
-def add_row(worksheet, new_data_dict):
-    """Tək sətir əlavə edir"""
+def add_rows_bulk(worksheet, new_data_list):
+    """Çoxlu sətri bir dəfəyə əlavə edir"""
     df = get_data(worksheet)
-    new_df = pd.DataFrame([new_data_dict])
+    new_df = pd.DataFrame(new_data_list)
+    # Sütun uyğunsuzluğu olmasın deyə
     updated_df = pd.concat([df, new_df], ignore_index=True)
     conn.update(worksheet=worksheet, data=updated_df)
 
-def add_rows_bulk(worksheet, new_data_list):
-    """Çoxlu sətri bir dəfəyə əlavə edir (Sürətli)"""
-    df = get_data(worksheet)
-    new_df = pd.DataFrame(new_data_list)
-    updated_df = pd.concat([df, new_df], ignore_index=True)
-    conn.update(worksheet=worksheet, data=updated_df)
+def add_row(worksheet, new_data_dict):
+    add_rows_bulk(worksheet, [new_data_dict])
 
 def update_order_status(order_id, winner, price):
     df = get_data("orders")
@@ -49,6 +45,15 @@ def update_user_password(username, new_password):
     else:
         pass 
 
+# Avtomatik Sütun Tapma Funksiyası
+def find_column_by_keyword(columns, keywords):
+    """Verilən açar sözlərə əsasən sütunu tapır"""
+    for col in columns:
+        for key in keywords:
+            if key.lower() in str(col).lower():
+                return col
+    return None
+
 # --- SESSİYA ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
@@ -59,15 +64,14 @@ if 'current_user' not in st.session_state:
 # YAN MENYU
 # ==========================================
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=80)
     st.title("🔐 Giriş Paneli")
 
-    # --- ADMIN PANELI ---
+    # --- ŞİFRƏ BƏRPASI (Yalnız Master Key ilə) ---
     with st.expander("🆘 Admin (Şifrə Sıfırla)"):
-        master_key_input = st.text_input("Master Key", type="password", key="master_input")
+        master_key_input = st.text_input("Master Key", type="password", key="mk_inp")
         if master_key_input.strip() == "admin123":
             st.success("Admin Girişi ✅")
-            reset_user = st.selectbox("İşçi seçin", ["Anar", "Samir", "Vüsal", "Orxan", "Elnur"], key="res_user_sel")
+            reset_user = st.selectbox("İşçi seçin", ["Admin", "Anar", "Samir", "Vüsal", "Orxan", "Elnur"])
             new_pass_admin = st.text_input("Yeni şifrə", key="rst_pass")
             if st.button("Şifrəni Dəyiş"):
                 users_df = get_data("users")
@@ -112,96 +116,6 @@ with st.sidebar:
                         st.error("Şifrə yanlışdır!")
     else:
         st.success(f"Xoş gəldin, **{st.session_state['current_user']}**")
-        
-        # --- TEK SİFARİŞ ---
-        with st.expander("➕ Tək Sifariş Yarat"):
-            with st.form("add_order_form"):
-                p_name = st.text_input("Malın Adı")
-                p_qty = st.number_input("Say", 1, 100)
-                if st.form_submit_button("Sistemə Vur"):
-                    orders_df = get_data("orders")
-                    new_id = 1
-                    if not orders_df.empty and 'id' in orders_df.columns:
-                        clean_ids = pd.to_numeric(orders_df['id'], errors='coerce').fillna(0)
-                        new_id = int(clean_ids.max()) + 1
-                    
-                    add_row("orders", {
-                        "id": new_id,
-                        "product_name": p_name,
-                        "qty": p_qty,
-                        "status": "Axtarışda",
-                        "winner": "",
-                        "final_price": 0.0,
-                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
-                    })
-                    st.toast("Əlavə olundu!")
-                    st.rerun()
-
-        # --- EXCEL SİFARİŞ (YENİ) ---
-        with st.expander("📂 Excel-dən Yüklə (Toplu)"):
-            st.info("Sütun başlıqları olan Excel və ya CSV faylı seçin.")
-            uploaded_file = st.file_uploader("Fayl Seç", type=["xlsx", "xls", "csv"])
-            
-            if uploaded_file:
-                try:
-                    if uploaded_file.name.endswith('.csv'):
-                        df_upload = pd.read_csv(uploaded_file)
-                    else:
-                        df_upload = pd.read_excel(uploaded_file)
-                    
-                    st.write("Faylın görünüşü:")
-                    st.dataframe(df_upload.head(3), height=100)
-                    
-                    # Sütunları seçmək
-                    cols = df_upload.columns.tolist()
-                    name_col = st.selectbox("Malın Adı hansı sütundadır?", cols, index=0)
-                    qty_col = st.selectbox("Say hansı sütundadır?", cols, index=1 if len(cols)>1 else 0)
-                    
-                    if st.button("Sistemə Yüklə 📥"):
-                        orders_df = get_data("orders")
-                        # Start ID hesablamaq
-                        start_id = 1
-                        if not orders_df.empty and 'id' in orders_df.columns:
-                            clean_ids = pd.to_numeric(orders_df['id'], errors='coerce').fillna(0)
-                            start_id = int(clean_ids.max()) + 1
-                        
-                        new_orders_list = []
-                        current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        
-                        count = 0
-                        for index, row in df_upload.iterrows():
-                            # Boş sətirləri buraxaq
-                            prod_val = str(row[name_col])
-                            if prod_val and prod_val.lower() != 'nan' and prod_val.strip() != '':
-                                # Sayı təmizləyək
-                                try:
-                                    q_val = int(float(row[qty_col]))
-                                except:
-                                    q_val = 1 # Xəta olsa 1 qəbul et
-                                
-                                new_orders_list.append({
-                                    "id": start_id + count,
-                                    "product_name": prod_val,
-                                    "qty": q_val,
-                                    "status": "Axtarışda",
-                                    "winner": "",
-                                    "final_price": 0.0,
-                                    "created_at": current_time
-                                })
-                                count += 1
-                        
-                        if new_orders_list:
-                            add_rows_bulk("orders", new_orders_list)
-                            st.success(f"{count} ədəd mal sistemə yükləndi!")
-                            time.sleep(2)
-                            st.rerun()
-                        else:
-                            st.warning("Yükləməyə uyğun məlumat tapılmadı.")
-
-                except Exception as e:
-                    st.error(f"Xəta oldu: {e}")
-
-        st.divider()
         if st.button("Çıxış Et 🔒", type="primary"):
             st.session_state['logged_in'] = False
             st.session_state['current_user'] = None
@@ -213,6 +127,120 @@ with st.sidebar:
 
 if st.session_state['logged_in']:
     user = st.session_state['current_user']
+    
+    # YALNIZ ADMIN GÖRƏCƏYİ HİSSƏLƏR
+    if user == "Admin":
+        st.info("🔧 Siz Admin rejimindəsiniz. Aşağıdakı panellər digər işçilərdə görünmür.")
+        
+        # --- EXCEL YÜKLƏMƏ ---
+        with st.expander("📂 Excel-dən Yüklə (Ağıllı Rejim)", expanded=True):
+            st.write("Sütun başlıqları olan Excel və ya CSV faylı seçin.")
+            
+            uploaded_file = st.file_uploader("Fayl Seç", type=["xlsx", "xls", "csv"])
+            header_row_idx = st.number_input("Başlıq neçənci sətirdədir? (0 = İlk sətir)", min_value=0, value=0)
+            
+            if uploaded_file:
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        df_upload = pd.read_csv(uploaded_file, header=header_row_idx)
+                    else:
+                        df_upload = pd.read_excel(uploaded_file, header=header_row_idx)
+                    
+                    st.dataframe(df_upload.head(3), height=100)
+                    cols = df_upload.columns.tolist()
+                    
+                    # Avtomatik Seçim Məntiqi
+                    # Malın adı üçün axtarır: Item, Description, Mal, Product
+                    def_name = find_column_by_keyword(cols, ["item", "description", "mal", "product", "ad"])
+                    # Say üçün: Qty, Quantity, Say, Amount
+                    def_qty = find_column_by_keyword(cols, ["qty", "quantity", "say", "amount", "miqdar"])
+                    # Ölçü vahidi üçün: Unit, Measure, Vahid, Olcu
+                    def_unit = find_column_by_keyword(cols, ["unit", "measure", "vahid", "olcu"])
+
+                    c1, c2, c3 = st.columns(3)
+                    name_col = c1.selectbox("Malın Adı:", cols, index=cols.index(def_name) if def_name else 0)
+                    qty_col = c2.selectbox("Say:", cols, index=cols.index(def_qty) if def_qty else 0)
+                    unit_col = c3.selectbox("Ölçü Vahidi (Varsa):", ["-Yoxdur-"] + cols, index=cols.index(def_unit)+1 if def_unit else 0)
+                    
+                    if st.button("Sistemə Yüklə 📥"):
+                        orders_df = get_data("orders")
+                        start_id = 1
+                        if not orders_df.empty and 'id' in orders_df.columns:
+                            clean_ids = pd.to_numeric(orders_df['id'], errors='coerce').fillna(0)
+                            start_id = int(clean_ids.max()) + 1
+                        
+                        new_orders_list = []
+                        current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        
+                        count = 0
+                        for index, row in df_upload.iterrows():
+                            prod_val = str(row[name_col])
+                            
+                            # Validasiya
+                            if prod_val and prod_val.lower() not in ['nan', 'none', 'subtotal'] and prod_val.strip() != '':
+                                # Say
+                                try:
+                                    q_val = int(float(row[qty_col]))
+                                except:
+                                    q_val = 1
+                                
+                                # Unit
+                                u_val = ""
+                                if unit_col != "-Yoxdur-":
+                                    u_val = str(row[unit_col])
+                                    if u_val.lower() == 'nan': u_val = ""
+
+                                new_orders_list.append({
+                                    "id": start_id + count,
+                                    "product_name": prod_val,
+                                    "qty": q_val,
+                                    "unit": u_val,
+                                    "status": "Axtarışda",
+                                    "winner": "",
+                                    "final_price": 0.0,
+                                    "created_at": current_time
+                                })
+                                count += 1
+                        
+                        if new_orders_list:
+                            add_rows_bulk("orders", new_orders_list)
+                            st.success(f"{count} ədəd mal yükləndi!")
+                            time.sleep(2)
+                            st.rerun()
+
+                except Exception as e:
+                    st.error(f"Xəta: {e}")
+
+        # --- TƏK SİFARİŞ ---
+        with st.expander("➕ Tək Sifariş Yarat"):
+            with st.form("add_single"):
+                c1, c2, c3 = st.columns([3, 1, 1])
+                p_name = c1.text_input("Malın Adı")
+                p_qty = c2.number_input("Say", 1, 100)
+                p_unit = c3.text_input("Ölçü (kq, m)", value="eded")
+                
+                if st.form_submit_button("Əlavə Et"):
+                    orders_df = get_data("orders")
+                    new_id = 1
+                    if not orders_df.empty and 'id' in orders_df.columns:
+                        clean_ids = pd.to_numeric(orders_df['id'], errors='coerce').fillna(0)
+                        new_id = int(clean_ids.max()) + 1
+                    
+                    add_row("orders", {
+                        "id": new_id,
+                        "product_name": p_name,
+                        "qty": p_qty,
+                        "unit": p_unit,
+                        "status": "Axtarışda",
+                        "winner": "",
+                        "final_price": 0.0,
+                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                    })
+                    st.toast("Əlavə olundu!")
+                    st.rerun()
+        st.divider()
+
+    # --- ÜMUMİ İSTİFADƏÇİ EKRANI ---
     c1, c2 = st.columns([8, 2])
     c1.title(f"👤 {user} - Şəxsi Kabinet")
     if c2.button("🔄 Yenilə"):
@@ -220,18 +248,17 @@ if st.session_state['logged_in']:
 
     tab1, tab2 = st.tabs(["🔥 Aktiv Bazar", "📜 Tarixçə"])
 
-    # --- TAB 1: AKTİV BAZAR ---
     with tab1:
         orders_df = get_data("orders")
         
         if orders_df.empty or 'status' not in orders_df.columns:
-            st.info("Bazada hələ heç bir məlumat yoxdur.")
+            st.info("Bazada mal yoxdur.")
             active_orders = pd.DataFrame()
         else:
             active_orders = orders_df[orders_df['status'] == 'Axtarışda']
 
         if active_orders.empty:
-            st.info("Hazırda aktiv sifariş yoxdur.")
+            st.info("Aktiv sifariş yoxdur.")
         else:
             active_orders = active_orders.sort_values(by="id", ascending=False)
             
@@ -239,6 +266,7 @@ if st.session_state['logged_in']:
                 oid = row['id']
                 prod = row['product_name']
                 qty = row['qty']
+                unit = row.get('unit', '') # Unit yoxdursa boş qəbul et
                 time_cr = row['created_at']
                 
                 with st.container(border=True):
@@ -246,7 +274,7 @@ if st.session_state['logged_in']:
                     
                     with col_l:
                         st.markdown(f"### 📦 {prod}")
-                        st.write(f"**Tələb:** {qty} ədəd")
+                        st.write(f"**Tələb:** {qty} {unit}")
                         st.caption(f"Yaradılıb: {time_cr}")
                     
                     with col_m:
@@ -274,7 +302,7 @@ if st.session_state['logged_in']:
                                 "price": new_price,
                                 "timestamp": datetime.now().strftime("%H:%M:%S")
                             })
-                            st.toast("Qiymət göndərildi!")
+                            st.toast("Göndərildi!")
                             time.sleep(1)
                             st.rerun()
                     
@@ -302,23 +330,25 @@ if st.session_state['logged_in']:
                                 else:
                                     st.warning(f"⚠️ Lider: **{best_user} ({best_price} AZN)**")
                             else:
-                                st.caption("Hələ təklif yoxdur.")
+                                st.caption("Təklif yoxdur.")
                         else:
-                            st.caption("Hələ təklif yoxdur.")
+                            st.caption("Təklif yoxdur.")
 
-    # --- TAB 2: TARİXÇƏ ---
     with tab2:
-        st.subheader("Qazanılmış Tenderlər")
+        st.subheader("Bitmiş Tenderlər")
         orders_df = get_data("orders")
-        
         if not orders_df.empty and 'status' in orders_df.columns:
             history_df = orders_df[orders_df['status'] == 'Tamamlandı']
             if not history_df.empty:
-                display_df = history_df[['product_name', 'qty', 'winner', 'final_price', 'created_at']]
-                st.table(display_df)
+                # Unit sütunu varsa göstər, yoxdursa error verməsin
+                cols_to_show = ['product_name', 'qty', 'winner', 'final_price', 'created_at']
+                if 'unit' in history_df.columns:
+                    cols_to_show.insert(2, 'unit')
+                st.table(history_df[cols_to_show])
             else:
-                st.write("Hələ ki, tamamlanmış sifariş yoxdur.")
+                st.write("Tarixçə boşdur.")
         else:
             st.write("Baza boşdur.")
+
 else:
-    st.info("👈 Giriş edin.")
+    st.info("👈 Zəhmət olmasa giriş edin.")
