@@ -25,7 +25,6 @@ def add_rows_bulk(worksheet, new_data_list):
 def add_row(worksheet, new_data_dict):
     add_rows_bulk(worksheet, [new_data_dict])
 
-# --- YENİ: Statusu dəyişmək üçün universal funksiya ---
 def update_order_stage(order_id, new_status, winner, price):
     df = get_data("orders")
     mask = df['id'] == order_id
@@ -51,6 +50,24 @@ def find_column_by_keyword(columns, keywords):
                 return col
     return None
 
+# --- YENİ: Başlıq Sətrini Avtomatik Tapan Funksiya ---
+def detect_header_row(df_preview):
+    """
+    İlk sətirləri yoxlayır, əgər 'Description' və 'Qty' kimi 
+    açar sözləri eyni sətirdə görsə, o sətrin nömrəsini qaytarır.
+    """
+    keywords = ['description', 'item', 'mal', 'ad', 'product', 'qty', 'quantity', 'say', 'amount']
+    
+    for idx, row in df_preview.iterrows():
+        # Sətri mətnə çevirib kiçik hərflə yoxlayırıq
+        row_text = " ".join(row.astype(str)).lower()
+        
+        # Əgər sətirdə ən azı 2 açar söz varsa, deməli başlıq budur
+        match_count = sum(1 for k in keywords if k in row_text)
+        if match_count >= 2:
+            return idx
+    return 0 # Tapmasa 0 qaytarır
+
 # --- SESSİYA ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
@@ -63,7 +80,6 @@ if 'current_user' not in st.session_state:
 with st.sidebar:
     st.title("🔐 Giriş Paneli")
 
-    # --- ŞİFRƏ BƏRPASI ---
     with st.expander("🆘 Admin (Şifrə Sıfırla)"):
         master_key_input = st.text_input("Master Key", type="password", key="mk_inp")
         if master_key_input.strip() == "admin123":
@@ -81,7 +97,6 @@ with st.sidebar:
 
     st.divider()
 
-    # --- GİRİŞ ---
     if not st.session_state['logged_in']:
         users_list = ["Seçin...", "Admin", "Anar", "Samir", "Vüsal", "Orxan", "Elnur"]
         selected_user = st.selectbox("İşçi Adı", users_list)
@@ -124,24 +139,43 @@ with st.sidebar:
 if st.session_state['logged_in']:
     user = st.session_state['current_user']
     
-    # --- ADMIN PANELI ---
     if user == "Admin":
         st.info("🔧 Admin Paneli")
         
-        with st.expander("📂 Excel-dən Yüklə (Ağıllı Rejim)", expanded=True):
+        # --- EXCEL YÜKLƏMƏ (AVTOMATİK REJİM) ---
+        with st.expander("📂 Excel-dən Yüklə (Avto-Detektor)", expanded=True):
             uploaded_file = st.file_uploader("Fayl Seç", type=["xlsx", "xls", "csv"])
-            header_row_idx = st.number_input("Başlıq neçənci sətirdədir? (0 = İlk sətir)", min_value=0, value=0)
+            
+            # Default olaraq 0, amma fayl yüklənəndə dəyişəcək
+            header_idx = 0 
             
             if uploaded_file:
                 try:
+                    # 1. Analiz üçün ilk 20 sətri oxuyuruq
                     if uploaded_file.name.endswith('.csv'):
-                        df_upload = pd.read_csv(uploaded_file, header=header_row_idx)
+                        df_preview = pd.read_csv(uploaded_file, header=None, nrows=20)
                     else:
-                        df_upload = pd.read_excel(uploaded_file, header=header_row_idx)
+                        df_preview = pd.read_excel(uploaded_file, header=None, nrows=20, engine='openpyxl')
                     
-                    st.dataframe(df_upload.head(3), height=100)
-                    cols = df_upload.columns.tolist()
+                    # 2. Avtomatik sətri tapırıq
+                    detected_idx = detect_header_row(df_preview)
                     
+                    # İstifadəçiyə göstəririk (və dəyişməyə icazə veririk)
+                    st.write(f"🤖 **Sistem təxmin etdi:** Başlıqlar **{detected_idx}**-ci sətirdədir.")
+                    header_idx = st.number_input("Başlıq Sətri Nömrəsi (Düzəliş etmək istəsəniz):", min_value=0, value=int(detected_idx), step=1)
+
+                    # 3. Əsas oxuma
+                    if uploaded_file.name.endswith('.csv'):
+                        uploaded_file.seek(0)
+                        df_final = pd.read_csv(uploaded_file, header=header_idx)
+                    else:
+                        df_final = pd.read_excel(uploaded_file, header=header_idx, engine='openpyxl')
+
+                    st.write("✅ **Cədvəl belə oxundu:**")
+                    st.dataframe(df_final.head(3), height=100)
+                    
+                    # Sütunları tapmaq
+                    cols = df_final.columns.tolist()
                     def_name = find_column_by_keyword(cols, ["item", "description", "mal", "product", "ad"])
                     def_qty = find_column_by_keyword(cols, ["qty", "quantity", "say", "amount", "miqdar"])
                     def_unit = find_column_by_keyword(cols, ["unit", "measure", "vahid", "olcu"])
@@ -162,11 +196,15 @@ if st.session_state['logged_in']:
                         current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
                         
                         count = 0
-                        for index, row in df_upload.iterrows():
+                        for index, row in df_final.iterrows():
                             prod_val = str(row[name_col])
-                            if prod_val and prod_val.lower() not in ['nan', 'none', 'subtotal'] and prod_val.strip() != '':
+                            invalid_words = ['nan', 'none', 'subtotal', 'total', 'grand total']
+                            
+                            if prod_val and prod_val.lower() not in invalid_words and prod_val.strip() != '':
                                 try:
-                                    q_val = int(float(row[qty_col]))
+                                    q_val = row[qty_col]
+                                    if pd.isna(q_val): q_val = 1
+                                    q_val = int(float(q_val))
                                 except:
                                     q_val = 1
                                 
@@ -189,9 +227,12 @@ if st.session_state['logged_in']:
                         
                         if new_orders_list:
                             add_rows_bulk("orders", new_orders_list)
-                            st.success(f"{count} ədəd mal yükləndi!")
+                            st.success(f"✅ {count} ədəd mal bazara yükləndi.")
                             time.sleep(2)
                             st.rerun()
+                        else:
+                            st.error("❌ Məlumat tapılmadı.")
+
                 except Exception as e:
                     st.error(f"Xəta: {e}")
 
@@ -223,7 +264,6 @@ if st.session_state['logged_in']:
                     st.rerun()
         st.divider()
 
-    # --- ÜMUMİ İŞÇİ EKRANI ---
     c1, c2 = st.columns([8, 2])
     c1.title(f"👤 {user} - Şəxsi Kabinet")
     if c2.button("🔄 Yenilə"):
@@ -234,12 +274,10 @@ if st.session_state['logged_in']:
     with tab1:
         orders_df = get_data("orders")
         
-        # Həm 'Axtarışda' olanları, həm də 'Təsdiqlənib' olanları göstər
         if orders_df.empty or 'status' not in orders_df.columns:
             st.info("Bazada mal yoxdur.")
             active_orders = pd.DataFrame()
         else:
-            # Statusu 'Tamamlandı' OLMAYAN hər şeyi gətir
             active_orders = orders_df[orders_df['status'].isin(['Axtarışda', 'Təsdiqlənib'])]
 
         if active_orders.empty:
@@ -256,7 +294,6 @@ if st.session_state['logged_in']:
                 winner_db = row.get('winner', '')
                 time_cr = row['created_at']
                 
-                # Kart Dizaynı - Rəngləri fərqləndirək
                 border_color = True
                 if status == 'Təsdiqlənib':
                     st.warning(f"⚠️ DİQQƏT! Bu malın satınalınması təsdiqlənib. ({winner_db} alır)")
@@ -264,7 +301,6 @@ if st.session_state['logged_in']:
                 with st.container(border=border_color):
                     col_l, col_m, col_r = st.columns([2, 2, 3])
                     
-                    # --- SOL HİSSƏ ---
                     with col_l:
                         st.markdown(f"### 📦 {prod}")
                         st.write(f"**Tələb:** {qty} {unit}")
@@ -272,7 +308,6 @@ if st.session_state['logged_in']:
                         if status == 'Təsdiqlənib':
                             st.caption(f"🔴 Status: Alınma prosesində ({winner_db})")
                     
-                    # --- ORTA HİSSƏ (QİYMƏT YAZMA) ---
                     with col_m:
                         if status == 'Axtarışda':
                             st.write("💰 **Təklifiniz:**")
@@ -302,10 +337,8 @@ if st.session_state['logged_in']:
                                 time.sleep(1)
                                 st.rerun()
                         else:
-                            # Təsdiqlənib statusundadırsa, qiymət yazmaq olmaz
                             st.info("🚫 Artıq təklif qəbul olunmur.")
 
-                    # --- SAĞ HİSSƏ (NƏTİCƏLƏR VƏ QƏRAR) ---
                     with col_r:
                         st.write("📊 **Vəziyyət:**")
                         bids_df = get_data("bids")
@@ -322,39 +355,28 @@ if st.session_state['logged_in']:
                                 
                                 st.dataframe(sorted_bids[['user', 'price']], hide_index=True)
 
-                                # --------------------------------------------
-                                # MƏNTİQ DƏYİŞİKLİYİ BURADADIR
-                                # --------------------------------------------
-                                
-                                # A. ƏGƏR STATUS 'AXTARIŞDA'DIRSA
                                 if status == 'Axtarışda':
                                     if user == "Admin":
-                                        # Admin yalnız təsdiq edə bilər (Özü ala bilməz)
                                         st.write(f"Lider: **{best_user}**")
                                         if st.button(f"✅ Təsdiqlə ({best_user} alsın)", key=f"approve_{oid}", type="primary"):
                                             update_order_stage(oid, 'Təsdiqlənib', best_user, best_price)
                                             st.rerun()
                                     else:
-                                        # İşçilər sadəcə lideri görür
                                         if user == best_user:
-                                            st.success("🏆 Hazırda Lidersiniz! Admin təsdiqini gözləyin.")
+                                            st.success("🏆 Lidersiniz! Gözləyin.")
                                         else:
                                             st.warning(f"Lider: {best_user} ({best_price} AZN)")
 
-                                # B. ƏGƏR STATUS 'TƏSDİQLƏNİB'DİRSƏ
                                 elif status == 'Təsdiqlənib':
                                     if user == winner_db:
-                                        # Yalnız QALİB İŞÇİ "Al" düyməsini görür
-                                        st.success("✅ Admin təsdiqlədi! Malı almalısınız.")
+                                        st.success("✅ Admin təsdiqlədi!")
                                         if st.button("🛒 ALDIM (Prosesi Bitir)", key=f"finish_{oid}", type="primary"):
                                             update_order_stage(oid, 'Tamamlandı', user, best_price)
                                             st.balloons()
                                             time.sleep(2)
                                             st.rerun()
                                     else:
-                                        # Digər işçilər və Admin
                                         st.error(f"⛔ Bu malı {winner_db} alır.")
-                                        
                             else:
                                 st.caption("Təklif yoxdur.")
                         else:
