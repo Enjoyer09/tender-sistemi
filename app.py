@@ -45,10 +45,9 @@ def update_user_password(username, new_password):
         add_row("users", {"username": username, "password": new_password})
 
 def upload_image_to_supabase(file_obj, filename):
-    """Şəkli Supabase Storage-ə yükləyir və linkini qaytarır"""
+    """Şəkli Supabase Storage-ə yükləyir"""
     try:
         bucket_name = "images"
-        # Fayl adını unikal etmək üçün zaman damğası əlavə edirik
         unique_name = f"{int(time.time())}_{filename}"
         file_bytes = file_obj.getvalue()
         
@@ -57,8 +56,6 @@ def upload_image_to_supabase(file_obj, filename):
             file=file_bytes,
             file_options={"content-type": file_obj.type}
         )
-        
-        # Public URL alırıq
         public_url = supabase.storage.from_(bucket_name).get_public_url(unique_name)
         return public_url
     except Exception as e:
@@ -66,7 +63,6 @@ def upload_image_to_supabase(file_obj, filename):
         return None
 
 def update_order_image(order_id, image_url):
-    """Şəklin linkini bazaya yazır"""
     supabase.table("orders").update({"image_url": image_url}).eq("id", order_id).execute()
 
 # --- EXCEL ANALİZİ ---
@@ -343,7 +339,7 @@ if st.session_state['logged_in']:
                 unit = row.get('unit', '')
                 status = row['status']
                 winner_db = row.get('winner', '')
-                image_url = row.get('image_url', None) # Şəkil URL-i
+                image_url = row.get('image_url', None)
                 
                 try: time_cr = pd.to_datetime(row['created_at']).strftime("%Y-%m-%d %H:%M")
                 except: time_cr = str(row['created_at'])[:16]
@@ -362,17 +358,15 @@ if st.session_state['logged_in']:
                     with st.container(border=border_color):
                         c_l, c_m, c_r = st.columns([2, 2, 3])
                         
-                        # --- 1. Məlumat və Şəkil ---
+                        # Məlumat
                         with c_l:
                             st.markdown(f"### 📦 {prod}")
                             st.write(f"**Tələb:** {qty} {unit}")
                             st.caption(f"Tarix: {time_cr}")
                             
-                            # Şəkil varsa göstər
                             if image_url:
                                 st.image(image_url, width=150)
                             
-                            # Admin şəkli dəyişə bilər
                             if user == "Admin":
                                 with st.popover("📷 Şəkil Yüklə"):
                                     img_file = st.file_uploader(f"Şəkil seç ({oid})", type=['png', 'jpg', 'jpeg'], key=f"upl_{oid}")
@@ -388,7 +382,7 @@ if st.session_state['logged_in']:
                             if status == 'Təsdiqlənib':
                                 st.caption(f"🔒 Təsdiqləyən: Admin")
                         
-                        # --- 2. Qiymət ---
+                        # Qiymət
                         with c_m:
                             if status == 'Axtarışda':
                                 if user == "Admin":
@@ -410,7 +404,7 @@ if st.session_state['logged_in']:
                             else:
                                 st.warning("🔒 Satış Bağlandı.")
 
-                        # --- 3. Nəticə ---
+                        # Nəticə
                         with c_r:
                             st.write("📊 **Vəziyyət:**")
                             if not all_bids_df.empty:
@@ -462,7 +456,9 @@ if st.session_state['logged_in']:
                         delete_orders(ids)
                         st.success("Silindi!")
                         del st.session_state['confirm_del_ids']
-                        if 'master_select' in st.session_state: st.session_state['master_select'] = False
+                        # DÜZƏLİŞ: Silməkdən sonra checkbox dəyərini məcburi False etmək xəta verir
+                        # Ona görə session-dan silirik, yenilənəndə sıfırlanır
+                        if 'master_select' in st.session_state: del st.session_state['master_select']
                         time.sleep(1)
                         st.rerun()
                     if c_no.button("❌ Xeyr"):
@@ -475,7 +471,6 @@ if st.session_state['logged_in']:
         history_df = pd.DataFrame(response.data)
         if not history_df.empty:
             cols_to_show = ['product_name', 'qty', 'unit', 'winner', 'final_price', 'created_at']
-            # Image URL varsa tarixçədə də göstərmək olar
             existing_cols = [c for c in cols_to_show if c in history_df.columns]
             st.table(history_df[existing_cols])
         else:
