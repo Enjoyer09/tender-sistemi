@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 from datetime import datetime
+import pytz  # Zaman zonası üçün kitabxana
 from supabase import create_client, Client
 
 # --- SƏHİFƏ TƏNZİMLƏMƏLƏRİ ---
@@ -16,6 +17,12 @@ except:
     st.error("Supabase açarları tapılmadı! Secrets bölməsini yoxlayın.")
     st.stop()
 
+# --- BAKI VAXTI FUNKSİYASI ---
+def get_baku_time():
+    """Hazırkı vaxtı Bakı saatı ilə qaytarır"""
+    baku_tz = pytz.timezone('Asia/Baku')
+    return datetime.now(baku_tz)
+
 # --- MƏLUMAT BAZASI FUNKSİYALARI ---
 def get_data(table_name):
     response = supabase.table(table_name).select("*").execute()
@@ -26,9 +33,12 @@ def add_row(table_name, data_dict):
     supabase.table(table_name).insert(data_dict).execute()
 
 def submit_bid(order_id, user, price):
-    """Qiyməti yeniləyir və ya əlavə edir"""
+    """Qiyməti yeniləyir və ya əlavə edir (Bakı vaxtı ilə)"""
     response = supabase.table("bids").select("*").eq("order_id", order_id).eq("user", user).execute()
-    current_time = datetime.now().strftime("%H:%M")
+    
+    # Bakı vaxtını alırıq
+    current_time = get_baku_time().strftime("%H:%M")
+    
     if response.data:
         bid_id = response.data[0]['id']
         supabase.table("bids").update({"price": price, "timestamp": current_time}).eq("id", bid_id).execute()
@@ -200,16 +210,16 @@ with st.sidebar:
 if st.session_state['logged_in']:
     user = st.session_state['current_user']
     
-    # --- HEADER: İSTİFADƏÇİ ADI + YENİLƏ DÜYMƏSİ + ZAMAN GÖSTƏRİCİSİ ---
+    # --- HEADER ---
     c1, c2 = st.columns([8, 2])
     c1.title(f"👤 {user} - Şəxsi Kabinet")
     
     with c2:
         if st.button("🔄 Yenilə", type="primary"):
             st.rerun()
-        # Son yenilənmə vaxtını göstəririk
-        current_time_str = datetime.now().strftime("%H:%M:%S")
-        st.caption(f"🕒 Son yenilənmə: **{current_time_str}**")
+        # Bakı vaxtı ilə göstər
+        current_time_str = get_baku_time().strftime("%H:%M:%S")
+        st.caption(f"🕒 Son yenilənmə: **{current_time_str}** (Bakı)")
 
     # Bazadan oxumaq
     response = supabase.table("orders").select("*").neq("status", "Tamamlandı").execute()
@@ -271,6 +281,8 @@ if st.session_state['logged_in']:
                     if st.button("Sistemə Yüklə 📥"):
                         new_orders_list = []
                         count = 0
+                        current_ts = get_baku_time().strftime("%Y-%m-%d %H:%M:%S") # Bazaya yazılan tarix də Bakı olsun
+                        
                         for index, row in df_final.iterrows():
                             prod_val = str(row[name_col])
                             invalid_words = ['nan', 'none', 'subtotal', 'total', 'grand total', 'talep eden', 'onay']
@@ -285,7 +297,11 @@ if st.session_state['logged_in']:
                                     u_val = str(row[unit_col])
                                     if u_val.lower() == 'nan': u_val = ""
                                 new_orders_list.append({
-                                    "product_name": prod_val, "qty": q_val, "unit": u_val, "status": "Axtarışda",
+                                    "product_name": prod_val, 
+                                    "qty": q_val, 
+                                    "unit": u_val, 
+                                    "status": "Axtarışda",
+                                    "created_at": current_ts # Bakı vaxtı ilə
                                 })
                                 count += 1
                         if new_orders_list:
@@ -304,7 +320,8 @@ if st.session_state['logged_in']:
                 p_qty = c2.number_input("Say", 1, 100)
                 p_unit = c3.text_input("Ölçü", value="eded")
                 if st.form_submit_button("Əlavə Et"):
-                    add_row("orders", {"product_name": p_name, "qty": p_qty, "unit": p_unit, "status": "Axtarışda"})
+                    current_ts = get_baku_time().strftime("%Y-%m-%d %H:%M:%S")
+                    add_row("orders", {"product_name": p_name, "qty": p_qty, "unit": p_unit, "status": "Axtarışda", "created_at": current_ts})
                     st.toast("Əlavə olundu!")
                     st.rerun()
         st.divider()
@@ -344,8 +361,12 @@ if st.session_state['logged_in']:
                 status = row['status']
                 winner_db = row.get('winner', '')
                 image_url = row.get('image_url', None)
-                try: time_cr = pd.to_datetime(row['created_at']).strftime("%Y-%m-%d %H:%M")
-                except: time_cr = str(row['created_at'])[:16]
+                
+                # Tarixi formatlamaq
+                try: 
+                    # Əgər string formatındadırsa, onu kəsirik
+                    time_cr = str(row['created_at'])[:16]
+                except: time_cr = str(row['created_at'])
                 
                 if user == "Admin":
                     col_chk, col_content = st.columns([0.5, 9.5])
@@ -387,12 +408,14 @@ if st.session_state['logged_in']:
                                 else:
                                     st.write("💰 **Təklifiniz:**")
                                     my_val = 0.0
+                                    # Mövcud təklifi tapırıq
                                     if not all_bids_df.empty:
                                         bid_match = all_bids_df[(all_bids_df['order_id'] == oid) & (all_bids_df['user'] == user)]
                                         if not bid_match.empty:
                                             my_val = bid_match.iloc[0]['price']
                                     
                                     new_price = st.number_input("Qiymət", value=float(my_val), step=1.0, key=f"inp_{oid}")
+                                    
                                     if st.button("Təsdiqlə / Yenilə", key=f"btn_{oid}"):
                                         msg = submit_bid(oid, user, new_price)
                                         st.toast(f"{msg}!")
