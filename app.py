@@ -25,6 +25,35 @@ def get_data(table_name):
 def add_row(table_name, data_dict):
     supabase.table(table_name).insert(data_dict).execute()
 
+# --- YENİ: Qiyməti Yeniləmək Funksiyası ---
+def submit_bid(order_id, user, price):
+    """
+    İstifadəçinin bu mal üçün köhnə qiyməti varsa yeniləyir,
+    yoxdursa təzəsini yazır.
+    """
+    # 1. Yoxlayırıq: Bu adam bu mala qiymət veribmi?
+    response = supabase.table("bids").select("*").eq("order_id", order_id).eq("user", user).execute()
+    
+    current_time = datetime.now().strftime("%H:%M")
+    
+    if response.data:
+        # VARSA -> UPDATE (Yenilə)
+        bid_id = response.data[0]['id']
+        supabase.table("bids").update({
+            "price": price,
+            "timestamp": current_time
+        }).eq("id", bid_id).execute()
+        return "Yeniləndi"
+    else:
+        # YOXDURSA -> INSERT (Əlavə et)
+        supabase.table("bids").insert({
+            "order_id": order_id,
+            "user": user,
+            "price": price,
+            "timestamp": current_time
+        }).execute()
+        return "Göndərildi"
+
 def update_order_stage(order_id, new_status, winner, price):
     supabase.table("orders").update({
         "status": new_status,
@@ -45,7 +74,6 @@ def update_user_password(username, new_password):
         add_row("users", {"username": username, "password": new_password})
 
 def upload_image_to_supabase(file_obj, filename):
-    """Şəkli Supabase Storage-ə yükləyir"""
     try:
         bucket_name = "images"
         unique_name = f"{int(time.time())}_{filename}"
@@ -65,28 +93,22 @@ def upload_image_to_supabase(file_obj, filename):
 def update_order_image(order_id, image_url):
     supabase.table("orders").update({"image_url": image_url}).eq("id", order_id).execute()
 
-# --- POPUP (MODAL) SİLMƏ PƏNCƏRƏSİ ---
+# --- POPUP SİLMƏ ---
 @st.dialog("⚠️ Silməni Təsdiqləyin")
 def confirm_delete_modal(ids_to_delete):
     st.warning(f"Seçilmiş **{len(ids_to_delete)}** ədəd malı bazadan silmək istədiyinizə əminsiniz?")
     st.write("Bu əməliyyat geri qaytarıla bilməz.")
-    
     col1, col2 = st.columns(2)
-    
     if col1.button("✅ Bəli, SİL", type="primary"):
         with st.spinner("Silinir..."):
             delete_orders(ids_to_delete)
         st.success("Mallar uğurla silindi!")
-        
-        # Checkbox-ları təmizləmək
         if 'master_select' in st.session_state: del st.session_state['master_select']
         for oid in ids_to_delete:
             key = f"chk_{oid}"
             if key in st.session_state: del st.session_state[key]
-            
         time.sleep(1)
         st.rerun()
-        
     if col2.button("❌ Ləğv et"):
         st.rerun()
 
@@ -126,7 +148,6 @@ def smart_column_guesser(df):
         if 'unit' in col_str or 'ölçü' in col_str or 'birim' in col_str or 'vahid' in col_str:
             unit_col_idx = i
             break
-
     return name_col_idx, qty_col_idx, unit_col_idx
 
 # --- SESSİYA ---
@@ -140,7 +161,6 @@ if 'current_user' not in st.session_state:
 # ==========================================
 with st.sidebar:
     st.title("🔐 Giriş Paneli")
-
     with st.expander("🆘 Admin (Şifrə Sıfırla)"):
         with st.form("admin_reset_form"):
             master_key_input = st.text_input("Master Key", type="password")
@@ -164,11 +184,9 @@ with st.sidebar:
     if not st.session_state['logged_in']:
         users_list = ["Seçin...", "Admin", "Anar", "Samir", "Vüsal", "Orxan", "Elnur"]
         selected_user = st.selectbox("İşçi Adı", users_list)
-
         if selected_user != "Seçin...":
             response = supabase.table("users").select("*").eq("username", selected_user).execute()
             user_data = response.data
-
             if not user_data:
                 st.warning("İlk girişinizdir.")
                 with st.form("register_form"):
@@ -201,7 +219,6 @@ with st.sidebar:
 # ==========================================
 # ƏSAS EKRAN
 # ==========================================
-
 if st.session_state['logged_in']:
     user = st.session_state['current_user']
     
@@ -218,13 +235,10 @@ if st.session_state['logged_in']:
         with st.expander("📂 Excel-dən Yüklə (Smart)", expanded=False):
             uploaded_file = st.file_uploader("Fayl Seç", type=["xlsx", "xls", "csv"])
             header_idx = 0 
-            
             if uploaded_file:
                 try:
                     file_engine = 'openpyxl'
-                    if uploaded_file.name.endswith('.xls'):
-                        file_engine = 'xlrd'
-                    
+                    if uploaded_file.name.endswith('.xls'): file_engine = 'xlrd'
                     if uploaded_file.name.endswith('.csv'):
                         df_preview = pd.read_csv(uploaded_file, header=None, nrows=25)
                     else:
@@ -251,7 +265,6 @@ if st.session_state['logged_in']:
                         else:
                             new_columns.append(col)
                     df_final.columns = new_columns
-
                     st.dataframe(df_final.head(3), height=100)
                     cols = df_final.columns.tolist()
                     guess_name, guess_qty, guess_unit = smart_column_guesser(df_final)
@@ -277,26 +290,19 @@ if st.session_state['logged_in']:
                                     if pd.isna(raw_qty): q_val = 1.0
                                     else: q_val = float(raw_qty)
                                 except: q_val = 1.0
-                                
                                 u_val = ""
                                 if unit_col != "-Yoxdur-":
                                     u_val = str(row[unit_col])
                                     if u_val.lower() == 'nan': u_val = ""
-
                                 new_orders_list.append({
-                                    "product_name": prod_val,
-                                    "qty": q_val,
-                                    "unit": u_val,
-                                    "status": "Axtarışda",
+                                    "product_name": prod_val, "qty": q_val, "unit": u_val, "status": "Axtarışda",
                                 })
                                 count += 1
-                        
                         if new_orders_list:
                             supabase.table("orders").insert(new_orders_list).execute()
                             st.success(f"✅ {count} ədəd mal bazaya yükləndi.")
                             time.sleep(1)
                             st.rerun()
-
                 except Exception as e:
                     st.error(f"Xəta: {e}")
 
@@ -308,17 +314,11 @@ if st.session_state['logged_in']:
                 p_qty = c2.number_input("Say", 1, 100)
                 p_unit = c3.text_input("Ölçü", value="eded")
                 if st.form_submit_button("Əlavə Et"):
-                    add_row("orders", {
-                        "product_name": p_name,
-                        "qty": p_qty,
-                        "unit": p_unit,
-                        "status": "Axtarışda"
-                    })
+                    add_row("orders", {"product_name": p_name, "qty": p_qty, "unit": p_unit, "status": "Axtarışda"})
                     st.toast("Əlavə olundu!")
                     st.rerun()
         st.divider()
 
-    # --- ƏSAS EKRAN ---
     c1, c2 = st.columns([8, 2])
     c1.title(f"👤 {user} - Şəxsi Kabinet")
     if c2.button("🔄 Yenilə"):
@@ -338,24 +338,18 @@ if st.session_state['logged_in']:
                     val = st.session_state.get('master_select', False)
                     for oid in orders_df['id']:
                         st.session_state[f"chk_{oid}"] = val
-
                 def get_selected_ids():
                     selected = []
                     for oid in orders_df['id']:
                         if st.session_state.get(f"chk_{oid}", False):
                             selected.append(oid)
                     return selected
-
                 c_master, c_btn = st.columns([2, 10])
                 c_master.checkbox("☑️ Hamısını Seç", key="master_select", on_change=toggle_select_all)
-                
-                # --- YUXARI SİL DÜYMƏSİ (POPUP İLƏ) ---
                 if c_btn.button("🗑️ Seçilənləri Sil (Üst)", type="primary"):
                     ids_to_del = get_selected_ids()
-                    if ids_to_del:
-                        confirm_delete_modal(ids_to_del) # POPUP AÇILIR
-                    else:
-                        st.toast("Seçim edilməyib!")
+                    if ids_to_del: confirm_delete_modal(ids_to_del)
+                    else: st.toast("Seçim edilməyib!")
 
             for index, row in orders_df.iterrows():
                 oid = row['id']
@@ -365,7 +359,6 @@ if st.session_state['logged_in']:
                 status = row['status']
                 winner_db = row.get('winner', '')
                 image_url = row.get('image_url', None)
-                
                 try: time_cr = pd.to_datetime(row['created_at']).strftime("%Y-%m-%d %H:%M")
                 except: time_cr = str(row['created_at'])[:16]
                 
@@ -377,24 +370,20 @@ if st.session_state['logged_in']:
 
                 with col_content:
                     border_color = True
-                    if status == 'Təsdiqlənib':
-                        st.error(f"⚠️ Satılıb! Alıcı: {winner_db}")
+                    if status == 'Təsdiqlənib': st.error(f"⚠️ Satılıb! Alıcı: {winner_db}")
                     
                     with st.container(border=border_color):
                         c_l, c_m, c_r = st.columns([2, 2, 3])
                         
-                        # Məlumat
+                        # SOL - MƏLUMAT
                         with c_l:
                             st.markdown(f"### 📦 {prod}")
                             st.write(f"**Tələb:** {qty} {unit}")
                             st.caption(f"Tarix: {time_cr}")
-                            
-                            if image_url:
-                                st.image(image_url, width=150)
-                            
+                            if image_url: st.image(image_url, width=150)
                             if user == "Admin":
                                 with st.popover("📷 Şəkil Yüklə"):
-                                    img_file = st.file_uploader(f"Şəkil seç ({oid})", type=['png', 'jpg', 'jpeg'], key=f"upl_{oid}")
+                                    img_file = st.file_uploader(f"Şəkil ({oid})", type=['png','jpg','jpeg'], key=f"upl_{oid}")
                                     if img_file and st.button("Yüklə", key=f"save_img_{oid}"):
                                         with st.spinner("Yüklənir..."):
                                             url = upload_image_to_supabase(img_file, img_file.name)
@@ -403,11 +392,9 @@ if st.session_state['logged_in']:
                                                 st.success("Yükləndi!")
                                                 time.sleep(1)
                                                 st.rerun()
-
-                            if status == 'Təsdiqlənib':
-                                st.caption(f"🔒 Təsdiqləyən: Admin")
+                            if status == 'Təsdiqlənib': st.caption(f"🔒 Təsdiqləyən: Admin")
                         
-                        # Qiymət
+                        # ORTA - QİYMƏT (DÜZƏLDİLMİŞ HİSSƏ)
                         with c_m:
                             if status == 'Axtarışda':
                                 if user == "Admin":
@@ -415,21 +402,24 @@ if st.session_state['logged_in']:
                                 else:
                                     st.write("💰 **Təklifiniz:**")
                                     my_val = 0.0
+                                    # Mövcud təklifi tapırıq
                                     if not all_bids_df.empty:
                                         bid_match = all_bids_df[(all_bids_df['order_id'] == oid) & (all_bids_df['user'] == user)]
                                         if not bid_match.empty:
-                                            my_val = bid_match.iloc[-1]['price']
+                                            my_val = bid_match.iloc[0]['price'] # Sonuncu qiyməti götürürük
                                     
                                     new_price = st.number_input("Qiymət", value=float(my_val), step=1.0, key=f"inp_{oid}")
-                                    if st.button("Göndər", key=f"btn_{oid}"):
-                                        add_row("bids", {"order_id": oid, "user": user, "price": new_price, "timestamp": datetime.now().strftime("%H:%M")})
-                                        st.toast("Göndərildi!")
+                                    
+                                    if st.button("Təsdiqlə / Yenilə", key=f"btn_{oid}"):
+                                        # YENİ FUNKSİYA ÇAĞIRILIR
+                                        msg = submit_bid(oid, user, new_price)
+                                        st.toast(f"{msg}!")
                                         time.sleep(0.5)
                                         st.rerun()
                             else:
                                 st.warning("🔒 Satış Bağlandı.")
 
-                        # Nəticə
+                        # SAĞ - NƏTİCƏ
                         with c_r:
                             st.write("📊 **Vəziyyət:**")
                             if not all_bids_df.empty:
@@ -438,9 +428,7 @@ if st.session_state['logged_in']:
                                     best_bid = rel_bids.sort_values(by="price", ascending=True).iloc[0]
                                     best_u = best_bid['user']
                                     best_p = best_bid['price']
-                                    
                                     st.write(f"🥇 **{best_u}** - {best_p} AZN")
-
                                     if status == 'Axtarışda':
                                         if user == "Admin":
                                             if st.button(f"✅ Təsdiqlə ({best_u})", key=f"app_{oid}", type="primary"):
@@ -456,22 +444,16 @@ if st.session_state['logged_in']:
                                                 st.balloons()
                                                 time.sleep(1)
                                                 st.rerun()
-                                        else:
-                                            st.error(f"⛔ {winner_db} alır.")
-                                else:
-                                    st.caption("Təklif yoxdur.")
-                            else:
-                                st.caption("Təklif yoxdur.")
+                                        else: st.error(f"⛔ {winner_db} alır.")
+                                else: st.caption("Təklif yoxdur.")
+                            else: st.caption("Təklif yoxdur.")
 
             if user == "Admin":
                 st.write("---")
-                # --- AŞAĞI SİL DÜYMƏSİ (POPUP İLƏ) ---
                 if st.button("🗑️ Seçilənləri Sil (Alt)", type="primary"):
                     ids_to_del = get_selected_ids()
-                    if ids_to_del:
-                        confirm_delete_modal(ids_to_del) # POPUP AÇILIR
-                    else:
-                        st.toast("Seçim edilməyib!")
+                    if ids_to_del: confirm_delete_modal(ids_to_del)
+                    else: st.toast("Seçim edilməyib!")
 
     with tab2:
         st.subheader("Bitmiş Tenderlər")
