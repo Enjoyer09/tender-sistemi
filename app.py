@@ -8,7 +8,6 @@ from supabase import create_client, Client
 st.set_page_config(page_title="Global Tender Sistemi", layout="wide")
 
 # --- SUPABASE QOŞULMA ---
-# Secrets-dən məlumatları oxuyuruq
 try:
     url = st.secrets["supabase"]["url"]
     key = st.secrets["supabase"]["key"]
@@ -39,13 +38,10 @@ def update_order_stage(order_id, new_status, winner, price):
 
 def update_user_password(username, new_password):
     """Şifrə yeniləyir"""
-    # Öncə user-i yoxlayaq
     response = supabase.table("users").select("*").eq("username", username).execute()
     if response.data:
-        # Update
         supabase.table("users").update({"password": new_password}).eq("username", username).execute()
     else:
-        # Insert
         add_row("users", {"username": username, "password": new_password})
 
 # --- Köməkçi Funksiyalar ---
@@ -78,9 +74,18 @@ with st.sidebar:
     st.title("🔐 Giriş Paneli")
 
     with st.expander("🆘 Admin (Şifrə Sıfırla)"):
-        master_key_input = st.text_input("Master Key", type="password", key="mk_inp")
-        if master_key_input.strip() == "admin123":
-            st.success("Admin Girişi ✅")
+        with st.form("admin_reset_form"):
+            master_key_input = st.text_input("Master Key", type="password")
+            submitted_master = st.form_submit_button("Yoxla")
+            
+            if submitted_master:
+                if master_key_input.strip() == "admin123":
+                    st.session_state['admin_unlocked'] = True
+                    st.success("Admin Girişi ✅")
+                else:
+                    st.error("Səhv Master Key")
+
+        if st.session_state.get('admin_unlocked', False):
             reset_user = st.selectbox("İşçi seçin", ["Admin", "Anar", "Samir", "Vüsal", "Orxan", "Elnur"])
             new_pass_admin = st.text_input("Yeni şifrə", key="rst_pass")
             if st.button("Şifrəni Dəyiş"):
@@ -95,27 +100,36 @@ with st.sidebar:
 
         if selected_user != "Seçin...":
             # Bazadan istifadəçini yoxla
+            # (Hər dəfə sorğu getməməsi üçün bunu formadan çöldə saxlayırıq)
             response = supabase.table("users").select("*").eq("username", selected_user).execute()
             user_data = response.data
 
             if not user_data:
                 st.warning("İlk girişinizdir.")
-                new_pass = st.text_input("Yeni Şifrə Təyin Et", type="password")
-                if st.button("Qeydiyyatdan Keç"):
-                    add_row("users", {"username": selected_user, "password": new_pass})
-                    st.success("Hazırdır! Daxil olun.")
-                    time.sleep(1)
-                    st.rerun()
-            else:
-                password = st.text_input("Şifrənizi yazın", type="password")
-                if st.button("Daxil Ol 🚀"):
-                    real_pass = user_data[0]['password']
-                    if str(real_pass).strip() == str(password).strip():
-                        st.session_state['logged_in'] = True
-                        st.session_state['current_user'] = selected_user
+                with st.form("register_form"):
+                    new_pass = st.text_input("Yeni Şifrə Təyin Et", type="password")
+                    submit_reg = st.form_submit_button("Qeydiyyatdan Keç")
+                    
+                    if submit_reg:
+                        add_row("users", {"username": selected_user, "password": new_pass})
+                        st.success("Hazırdır! İndi giriş edin.")
+                        time.sleep(1)
                         st.rerun()
-                    else:
-                        st.error("Şifrə yanlışdır!")
+            else:
+                # --- ENTER DÜYMƏSİ ÜÇÜN LOGIN FORMASI ---
+                with st.form("login_form"):
+                    password = st.text_input("Şifrənizi yazın", type="password")
+                    # form_submit_button həm klikləyəndə, həm də Enter basanda işləyir
+                    submit_login = st.form_submit_button("Daxil Ol 🚀")
+                    
+                    if submit_login:
+                        real_pass = user_data[0]['password']
+                        if str(real_pass).strip() == str(password).strip():
+                            st.session_state['logged_in'] = True
+                            st.session_state['current_user'] = selected_user
+                            st.rerun()
+                        else:
+                            st.error("Şifrə yanlışdır!")
     else:
         st.success(f"Xoş gəldin, **{st.session_state['current_user']}**")
         if st.button("Çıxış Et 🔒", type="primary"):
@@ -140,11 +154,15 @@ if st.session_state['logged_in']:
             
             if uploaded_file:
                 try:
+                    file_engine = 'openpyxl'
+                    if uploaded_file.name.endswith('.xls'):
+                        file_engine = 'xlrd'
+                    
                     # 1. Preview
                     if uploaded_file.name.endswith('.csv'):
                         df_preview = pd.read_csv(uploaded_file, header=None, nrows=20)
                     else:
-                        df_preview = pd.read_excel(uploaded_file, header=None, nrows=20, engine='openpyxl')
+                        df_preview = pd.read_excel(uploaded_file, header=None, nrows=20, engine=file_engine)
                     
                     detected_idx = detect_header_row(df_preview)
                     
@@ -156,7 +174,7 @@ if st.session_state['logged_in']:
                         uploaded_file.seek(0)
                         df_final = pd.read_csv(uploaded_file, header=header_idx)
                     else:
-                        df_final = pd.read_excel(uploaded_file, header=header_idx, engine='openpyxl')
+                        df_final = pd.read_excel(uploaded_file, header=header_idx, engine=file_engine)
 
                     st.dataframe(df_final.head(3), height=100)
                     
@@ -172,8 +190,6 @@ if st.session_state['logged_in']:
                     
                     if st.button("Sistemə Yüklə 📥"):
                         new_orders_list = []
-                        
-                        # Supabase vaxtı avtomatik qoyur, amma biz string kimi ata bilərik
                         
                         count = 0
                         for index, row in df_final.iterrows():
@@ -193,18 +209,15 @@ if st.session_state['logged_in']:
                                     u_val = str(row[unit_col])
                                     if u_val.lower() == 'nan': u_val = ""
 
-                                # ID-ni göndərmirik, Supabase özü verir
                                 new_orders_list.append({
                                     "product_name": prod_val,
                                     "qty": q_val,
                                     "unit": u_val,
                                     "status": "Axtarışda",
-                                    # created_at avtomatik düşəcək
                                 })
                                 count += 1
                         
                         if new_orders_list:
-                            # Toplu yükləmə (Batch Insert)
                             supabase.table("orders").insert(new_orders_list).execute()
                             st.success(f"✅ {count} ədəd mal bazaya yükləndi.")
                             time.sleep(1)
@@ -242,7 +255,6 @@ if st.session_state['logged_in']:
     tab1, tab2 = st.tabs(["🔥 Aktiv Bazar", "📜 Tarixçə"])
 
     with tab1:
-        # Yalnız aktivləri çəkək (Filteri serverdə edirik - daha sürətlidir)
         response = supabase.table("orders").select("*").neq("status", "Tamamlandı").execute()
         orders_df = pd.DataFrame(response.data)
 
@@ -250,8 +262,6 @@ if st.session_state['logged_in']:
             st.info("Aktiv sifariş yoxdur.")
         else:
             orders_df = orders_df.sort_values(by="id", ascending=False)
-            
-            # Bütün təklifləri bir dəfəyə çəkək (Optimallaşdırma)
             bids_resp = supabase.table("bids").select("*").execute()
             all_bids_df = pd.DataFrame(bids_resp.data)
 
@@ -262,7 +272,6 @@ if st.session_state['logged_in']:
                 unit = row.get('unit', '')
                 status = row['status']
                 winner_db = row.get('winner', '')
-                # Vaxtı formatlamaq
                 try:
                     time_cr = pd.to_datetime(row['created_at']).strftime("%Y-%m-%d %H:%M")
                 except:
@@ -292,6 +301,7 @@ if st.session_state['logged_in']:
                                 if not my_bid.empty:
                                     my_val = my_bid.iloc[-1]['price']
                             
+                            # FORM DAXİLİNDƏ OLMAMALIDIR (Hər sətir ayrıdır)
                             new_price = st.number_input("Qiymət (AZN)", value=float(my_val), step=1.0, key=f"inp_{oid}")
                             
                             if st.button("Göndər", key=f"btn_{oid}"):
@@ -351,13 +361,11 @@ if st.session_state['logged_in']:
 
     with tab2:
         st.subheader("Bitmiş Tenderlər")
-        # Yalnız tamamlanmışları çək
         response = supabase.table("orders").select("*").eq("status", "Tamamlandı").execute()
         history_df = pd.DataFrame(response.data)
         
         if not history_df.empty:
             cols_to_show = ['product_name', 'qty', 'unit', 'winner', 'final_price', 'created_at']
-            # Olmayan sütunları idarə etmək
             existing_cols = [c for c in cols_to_show if c in history_df.columns]
             st.table(history_df[existing_cols])
         else:
