@@ -200,11 +200,16 @@ with st.sidebar:
 if st.session_state['logged_in']:
     user = st.session_state['current_user']
     
-    # --- YENİ YER: BAŞLIQ VƏ YENİLƏ DÜYMƏSİ ƏN YUXARIDA ---
+    # --- HEADER: İSTİFADƏÇİ ADI + YENİLƏ DÜYMƏSİ + ZAMAN GÖSTƏRİCİSİ ---
     c1, c2 = st.columns([8, 2])
     c1.title(f"👤 {user} - Şəxsi Kabinet")
-    if c2.button("🔄 Yenilə", type="primary"):
-        st.rerun()
+    
+    with c2:
+        if st.button("🔄 Yenilə", type="primary"):
+            st.rerun()
+        # Son yenilənmə vaxtını göstəririk
+        current_time_str = datetime.now().strftime("%H:%M:%S")
+        st.caption(f"🕒 Son yenilənmə: **{current_time_str}**")
 
     # Bazadan oxumaq
     response = supabase.table("orders").select("*").neq("status", "Tamamlandı").execute()
