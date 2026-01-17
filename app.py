@@ -38,7 +38,8 @@ def update_order_stage(order_id, new_status, winner, price):
 
 def delete_orders(order_ids):
     """Sifarişləri silir"""
-    # Öncə bu sifarişlərə aid bids (təklifləri) silmək lazımdır (əgər foreign key varsa)
+    if not order_ids: return
+    # Öncə bu sifarişlərə aid bids (təklifləri) silmək lazımdır
     supabase.table("bids").delete().in_("order_id", order_ids).execute()
     # Sonra sifarişin özünü silirik
     supabase.table("orders").delete().in_("id", order_ids).execute()
@@ -60,8 +61,7 @@ def find_column_by_keyword(columns, keywords):
     return None
 
 def detect_header_row(df_preview):
-    # Açar sözlər (Sizin fayl üçün 'birim', 'sira' sözlərini də əlavə etdim)
-    keywords = ['description', 'item', 'mal', 'ad', 'product', 'qty', 'quantity', 'say', 'amount', 'birim', 'sira', 'sıra']
+    keywords = ['description', 'item', 'mal', 'ad', 'product', 'qty', 'quantity', 'say', 'amount', 'birim', 'sira']
     for idx, row in df_preview.iterrows():
         row_text = " ".join(row.astype(str)).lower()
         match_count = sum(1 for k in keywords if k in row_text)
@@ -149,10 +149,10 @@ if st.session_state['logged_in']:
     user = st.session_state['current_user']
     
     if user == "Admin":
-        st.info("🔧 Admin Paneli (Supabase Gücü ilə ⚡)")
+        st.info("🔧 Admin Paneli")
         
         # --- 1. EXCEL YÜKLƏMƏ ---
-        with st.expander("📂 Excel-dən Yüklə (Təkmilləşdirilmiş)", expanded=True):
+        with st.expander("📂 Excel-dən Yüklə", expanded=False):
             uploaded_file = st.file_uploader("Fayl Seç", type=["xlsx", "xls", "csv"])
             header_idx = 0 
             
@@ -162,18 +162,15 @@ if st.session_state['logged_in']:
                     if uploaded_file.name.endswith('.xls'):
                         file_engine = 'xlrd'
                     
-                    # Preview
                     if uploaded_file.name.endswith('.csv'):
                         df_preview = pd.read_csv(uploaded_file, header=None, nrows=20)
                     else:
                         df_preview = pd.read_excel(uploaded_file, header=None, nrows=20, engine=file_engine)
                     
                     detected_idx = detect_header_row(df_preview)
-                    
-                    st.write(f"🤖 **Təxmin edilən başlıq sətri:** {detected_idx}")
+                    st.write(f"🤖 Təxmin edilən başlıq: {detected_idx}")
                     header_idx = st.number_input("Başlıq Sətri Nömrəsi:", min_value=0, value=int(detected_idx), step=1)
 
-                    # Real Oxuma
                     if uploaded_file.name.endswith('.csv'):
                         uploaded_file.seek(0)
                         df_final = pd.read_csv(uploaded_file, header=header_idx)
@@ -181,28 +178,19 @@ if st.session_state['logged_in']:
                         df_final = pd.read_excel(uploaded_file, header=header_idx, engine=file_engine)
 
                     st.dataframe(df_final.head(3), height=100)
-                    
                     cols = df_final.columns.tolist()
-                    def_name = find_column_by_keyword(cols, ["item", "description", "mal", "product", "ad"])
-                    def_qty = find_column_by_keyword(cols, ["qty", "quantity", "say", "amount", "miqdar"])
-                    def_unit = find_column_by_keyword(cols, ["unit", "measure", "vahid", "olcu"])
-
-                    c1, c2, c3 = st.columns(3)
-                    name_col = c1.selectbox("Malın Adı:", cols, index=cols.index(def_name) if def_name else 0)
-                    qty_col = c2.selectbox("Say:", cols, index=cols.index(def_qty) if def_qty else 0)
-                    unit_col = c3.selectbox("Ölçü (Varsa):", ["-Yoxdur-"] + cols, index=cols.index(def_unit)+1 if def_unit else 0)
                     
-                    # --- NÜMUNƏ GÖSTƏRMƏK (Ən vacib hissə) ---
-                    st.caption(f"👀 Seçilmiş '{name_col}' sütunundakı ilk dəyərlər: {df_final[name_col].head(3).tolist()}")
-
+                    c1, c2, c3 = st.columns(3)
+                    name_col = c1.selectbox("Malın Adı:", cols, index=0)
+                    qty_col = c2.selectbox("Say:", cols, index=1 if len(cols)>1 else 0)
+                    unit_col = c3.selectbox("Ölçü:", ["-Yoxdur-"] + cols, index=0)
+                    
                     if st.button("Sistemə Yüklə 📥"):
                         new_orders_list = []
                         count = 0
                         for index, row in df_final.iterrows():
                             prod_val = str(row[name_col])
                             invalid_words = ['nan', 'none', 'subtotal', 'total', 'grand total']
-                            
-                            # Boşluqları təmizlə
                             if prod_val and prod_val.lower() not in invalid_words and prod_val.strip() != '':
                                 try:
                                     q_val = row[qty_col]
@@ -226,11 +214,9 @@ if st.session_state['logged_in']:
                         
                         if new_orders_list:
                             supabase.table("orders").insert(new_orders_list).execute()
-                            st.success(f"✅ {count} ədəd mal bazaya yükləndi.")
+                            st.success(f"✅ {count} ədəd mal yükləndi.")
                             time.sleep(1)
                             st.rerun()
-                        else:
-                            st.error("❌ Məlumat tapılmadı. Zəhmət olmasa 'Başlıq Sətri'ni düzgün seçin.")
 
                 except Exception as e:
                     st.error(f"Xəta: {e}")
@@ -253,45 +239,43 @@ if st.session_state['logged_in']:
                     st.toast("Əlavə olundu!")
                     st.rerun()
 
-        # --- 3. SİLİNMƏ PANELİ (YENİ) ---
+        # --- 3. SİLİNMƏ PANELİ (YENİ və DÜZƏLDİLMİŞ) ---
         with st.expander("🗑️ Sifarişləri Sil (Toplu)", expanded=False):
             st.write("Silmək istədiyiniz malları seçin:")
             
-            # Bazadan bütün aktivləri çəkirik
             orders_resp = supabase.table("orders").select("id, product_name, qty").neq("status", "Tamamlandı").execute()
             df_delete = pd.DataFrame(orders_resp.data)
             
             if not df_delete.empty:
-                # Seçim üçün format yaradiriq: "ID: Malın Adı (Say)"
                 df_delete['display_text'] = df_delete.apply(lambda x: f"[{x['id']}] {x['product_name']} ({x['qty']})", axis=1)
                 
-                selected_items = st.multiselect("Malları Seçin:", df_delete['display_text'].tolist())
+                # Form daxilində ki, səhifə yenilənməsi problemi olmasın
+                with st.form("delete_form"):
+                    selected_items = st.multiselect("Malları Seçin:", df_delete['display_text'].tolist())
+                    delete_btn = st.form_submit_button("🗑️ Seçilənləri Sil")
                 
-                if selected_items:
-                    # Seçilən mətnlərdən ID-ləri çıxarırıq
-                    selected_ids = []
-                    for item in selected_items:
-                        # "[123] Mal" -> 123
-                        id_part = item.split(']')[0].replace('[', '')
-                        selected_ids.append(int(id_part))
+                if delete_btn and selected_items:
+                     # ID-ləri çıxarırıq
+                    selected_ids = [int(item.split(']')[0].replace('[', '')) for item in selected_items]
                     
-                    st.warning(f"{len(selected_ids)} ədəd mal silinəcək!")
-                    
-                    # Təsdiqləmə mexanizmi
-                    col_del1, col_del2 = st.columns([1, 4])
-                    if col_del1.button("❌ SİL"):
-                        st.session_state['confirm_delete_ids'] = selected_ids
-                    
-                    if 'confirm_delete_ids' in st.session_state and st.session_state['confirm_delete_ids'] == selected_ids:
-                        st.error("⚠️ Əminsiniz? Bu əməliyyat geri qaytarıla bilməz.")
-                        if st.button("Bəli, Əminəm - SİL"):
-                            delete_orders(selected_ids)
-                            st.success("Mallar silindi!")
-                            del st.session_state['confirm_delete_ids']
-                            time.sleep(1)
-                            st.rerun()
-            else:
-                st.info("Silinəcək aktiv mal yoxdur.")
+                    # Session state ilə təsdiqləmə pəncərəsi
+                    st.session_state['ids_to_delete'] = selected_ids
+                    st.rerun()
+
+            # Təsdiqləmə mesajı formdan kənarda
+            if 'ids_to_delete' in st.session_state:
+                ids = st.session_state['ids_to_delete']
+                st.warning(f"⚠️ {len(ids)} ədəd malı silməyə əminsiniz?")
+                col_y, col_n = st.columns(2)
+                if col_y.button("✅ Bəli, Sil"):
+                    delete_orders(ids)
+                    st.success("Silindi!")
+                    del st.session_state['ids_to_delete']
+                    time.sleep(1)
+                    st.rerun()
+                if col_n.button("❌ Xeyr, Qaytar"):
+                    del st.session_state['ids_to_delete']
+                    st.rerun()
 
         st.divider()
 
@@ -325,45 +309,55 @@ if st.session_state['logged_in']:
                 except:
                     time_cr = str(row['created_at'])[:16]
                 
+                # Kartın çərçivə rəngi
                 border_color = True
+                
+                # Əgər mal "Təsdiqlənib" statusundadırsa, hamıya xəbərdarlıq çıxır
                 if status == 'Təsdiqlənib':
-                    st.warning(f"⚠️ DİQQƏT! Bu malın satınalınması təsdiqlənib. ({winner_db} alır)")
+                    st.error(f"⚠️ Bu mal satılıb! Alıcı: **{winner_db}**")
                 
                 with st.container(border=border_color):
                     col_l, col_m, col_r = st.columns([2, 2, 3])
                     
+                    # --- SOL TƏRƏF (Məlumat) ---
                     with col_l:
                         st.markdown(f"### 📦 {prod}")
                         st.write(f"**Tələb:** {qty} {unit}")
                         st.caption(f"Yaradılıb: {time_cr}")
                         if status == 'Təsdiqlənib':
-                            st.caption(f"🔴 Status: Alınma prosesində ({winner_db})")
+                            st.caption(f"🔒 Status: {winner_db} təsdiqlədi")
                     
+                    # --- ORTA TƏRƏF (Qiymət Yazma) ---
                     with col_m:
+                        # Məntiq: Admin qiymət yaza bilməz. User ancaq "Axtarışda" olanda yaza bilər.
                         if status == 'Axtarışda':
-                            st.write("💰 **Təklifiniz:**")
-                            
-                            my_val = 0.0
-                            if not all_bids_df.empty:
-                                my_bid = all_bids_df[(all_bids_df['order_id'] == oid) & (all_bids_df['user'] == user)]
-                                if not my_bid.empty:
-                                    my_val = my_bid.iloc[-1]['price']
-                            
-                            new_price = st.number_input("Qiymət (AZN)", value=float(my_val), step=1.0, key=f"inp_{oid}")
-                            
-                            if st.button("Göndər", key=f"btn_{oid}"):
-                                add_row("bids", {
-                                    "order_id": oid,
-                                    "user": user,
-                                    "price": new_price,
-                                    "timestamp": datetime.now().strftime("%H:%M:%S")
-                                })
-                                st.toast("Göndərildi!")
-                                time.sleep(0.5)
-                                st.rerun()
+                            if user == "Admin":
+                                st.info("👁️ Admin rejimi: Siz qiymət verə bilməzsiniz.")
+                            else:
+                                st.write("💰 **Təklifiniz:**")
+                                my_val = 0.0
+                                if not all_bids_df.empty:
+                                    my_bid = all_bids_df[(all_bids_df['order_id'] == oid) & (all_bids_df['user'] == user)]
+                                    if not my_bid.empty:
+                                        my_val = my_bid.iloc[-1]['price']
+                                
+                                new_price = st.number_input("Qiymət (AZN)", value=float(my_val), step=1.0, key=f"inp_{oid}")
+                                
+                                if st.button("Göndər", key=f"btn_{oid}"):
+                                    add_row("bids", {
+                                        "order_id": oid,
+                                        "user": user,
+                                        "price": new_price,
+                                        "timestamp": datetime.now().strftime("%H:%M:%S")
+                                    })
+                                    st.toast("Göndərildi!")
+                                    time.sleep(0.5)
+                                    st.rerun()
                         else:
-                            st.info("🚫 Artıq təklif qəbul olunmur.")
+                            # Status Təsdiqlənib -> Hamı üçün bağlanır
+                            st.warning(f"🔒 Satış Bağlandı. ({winner_db} aldı)")
 
+                    # --- SAĞ TƏRƏF (Nəticələr və Admin Qərarı) ---
                     with col_r:
                         st.write("📊 **Vəziyyət:**")
                         
@@ -379,27 +373,33 @@ if st.session_state['logged_in']:
                                 
                                 st.dataframe(sorted_bids[['user', 'price']], hide_index=True)
 
+                                # --- STATUS MƏNTİQİ ---
                                 if status == 'Axtarışda':
                                     if user == "Admin":
-                                        st.write(f"Lider: **{best_user}**")
+                                        st.write(f"Ən yaxşı qiymət: **{best_user}**")
+                                        # Admin yalnız təsdiq edir
                                         if st.button(f"✅ Təsdiqlə ({best_user} alsın)", key=f"approve_{oid}", type="primary"):
                                             update_order_stage(oid, 'Təsdiqlənib', best_user, best_price)
                                             st.rerun()
                                     else:
                                         if user == best_user:
-                                            st.success("🏆 Lidersiniz! Gözləyin.")
+                                            st.success("🏆 Lidersiniz! Admin təsdiqini gözləyin.")
                                         else:
-                                            st.warning(f"Lider: {best_user} ({best_price} AZN)")
+                                            st.info(f"Lider: {best_user} ({best_price} AZN)")
 
                                 elif status == 'Təsdiqlənib':
                                     if user == winner_db:
-                                        st.success("✅ Admin təsdiqlədi!")
+                                        # Yalnız Qalib "ALDIM" düyməsini görür
+                                        st.success("✅ Admin təsdiqlədi! Malı almalısınız.")
                                         if st.button("🛒 ALDIM (Prosesi Bitir)", key=f"finish_{oid}", type="primary"):
                                             update_order_stage(oid, 'Tamamlandı', user, best_price)
                                             st.balloons()
                                             time.sleep(1)
                                             st.rerun()
+                                    elif user == "Admin":
+                                        st.info(f"⏳ {winner_db}-in malı alması gözlənilir.")
                                     else:
+                                        # Digər istifadəçilər
                                         st.error(f"⛔ Bu malı {winner_db} alır.")
                             else:
                                 st.caption("Təklif yoxdur.")
