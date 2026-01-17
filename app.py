@@ -25,33 +25,16 @@ def get_data(table_name):
 def add_row(table_name, data_dict):
     supabase.table(table_name).insert(data_dict).execute()
 
-# --- YENİ: Qiyməti Yeniləmək Funksiyası ---
 def submit_bid(order_id, user, price):
-    """
-    İstifadəçinin bu mal üçün köhnə qiyməti varsa yeniləyir,
-    yoxdursa təzəsini yazır.
-    """
-    # 1. Yoxlayırıq: Bu adam bu mala qiymət veribmi?
+    """Qiyməti yeniləyir və ya əlavə edir"""
     response = supabase.table("bids").select("*").eq("order_id", order_id).eq("user", user).execute()
-    
     current_time = datetime.now().strftime("%H:%M")
-    
     if response.data:
-        # VARSA -> UPDATE (Yenilə)
         bid_id = response.data[0]['id']
-        supabase.table("bids").update({
-            "price": price,
-            "timestamp": current_time
-        }).eq("id", bid_id).execute()
+        supabase.table("bids").update({"price": price, "timestamp": current_time}).eq("id", bid_id).execute()
         return "Yeniləndi"
     else:
-        # YOXDURSA -> INSERT (Əlavə et)
-        supabase.table("bids").insert({
-            "order_id": order_id,
-            "user": user,
-            "price": price,
-            "timestamp": current_time
-        }).execute()
+        supabase.table("bids").insert({"order_id": order_id, "user": user, "price": price, "timestamp": current_time}).execute()
         return "Göndərildi"
 
 def update_order_stage(order_id, new_status, winner, price):
@@ -78,12 +61,7 @@ def upload_image_to_supabase(file_obj, filename):
         bucket_name = "images"
         unique_name = f"{int(time.time())}_{filename}"
         file_bytes = file_obj.getvalue()
-        
-        supabase.storage.from_(bucket_name).upload(
-            path=unique_name,
-            file=file_bytes,
-            file_options={"content-type": file_obj.type}
-        )
+        supabase.storage.from_(bucket_name).upload(path=unique_name, file=file_bytes, file_options={"content-type": file_obj.type})
         public_url = supabase.storage.from_(bucket_name).get_public_url(unique_name)
         return public_url
     except Exception as e:
@@ -222,6 +200,13 @@ with st.sidebar:
 if st.session_state['logged_in']:
     user = st.session_state['current_user']
     
+    # --- YENİ YER: BAŞLIQ VƏ YENİLƏ DÜYMƏSİ ƏN YUXARIDA ---
+    c1, c2 = st.columns([8, 2])
+    c1.title(f"👤 {user} - Şəxsi Kabinet")
+    if c2.button("🔄 Yenilə", type="primary"):
+        st.rerun()
+
+    # Bazadan oxumaq
     response = supabase.table("orders").select("*").neq("status", "Tamamlandı").execute()
     orders_df = pd.DataFrame(response.data)
     if not orders_df.empty:
@@ -319,11 +304,6 @@ if st.session_state['logged_in']:
                     st.rerun()
         st.divider()
 
-    c1, c2 = st.columns([8, 2])
-    c1.title(f"👤 {user} - Şəxsi Kabinet")
-    if c2.button("🔄 Yenilə"):
-        st.rerun()
-
     tab1, tab2 = st.tabs(["🔥 Aktiv Bazar", "📜 Tarixçə"])
 
     with tab1:
@@ -394,7 +374,7 @@ if st.session_state['logged_in']:
                                                 st.rerun()
                             if status == 'Təsdiqlənib': st.caption(f"🔒 Təsdiqləyən: Admin")
                         
-                        # ORTA - QİYMƏT (DÜZƏLDİLMİŞ HİSSƏ)
+                        # ORTA - QİYMƏT
                         with c_m:
                             if status == 'Axtarışda':
                                 if user == "Admin":
@@ -402,16 +382,13 @@ if st.session_state['logged_in']:
                                 else:
                                     st.write("💰 **Təklifiniz:**")
                                     my_val = 0.0
-                                    # Mövcud təklifi tapırıq
                                     if not all_bids_df.empty:
                                         bid_match = all_bids_df[(all_bids_df['order_id'] == oid) & (all_bids_df['user'] == user)]
                                         if not bid_match.empty:
-                                            my_val = bid_match.iloc[0]['price'] # Sonuncu qiyməti götürürük
+                                            my_val = bid_match.iloc[0]['price']
                                     
                                     new_price = st.number_input("Qiymət", value=float(my_val), step=1.0, key=f"inp_{oid}")
-                                    
                                     if st.button("Təsdiqlə / Yenilə", key=f"btn_{oid}"):
-                                        # YENİ FUNKSİYA ÇAĞIRILIR
                                         msg = submit_bid(oid, user, new_price)
                                         st.toast(f"{msg}!")
                                         time.sleep(0.5)
