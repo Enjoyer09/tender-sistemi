@@ -36,6 +36,13 @@ def update_order_stage(order_id, new_status, winner, price):
         "final_price": price
     }).eq("id", order_id).execute()
 
+def delete_orders(order_ids):
+    """Sifarişləri silir"""
+    # Öncə bu sifarişlərə aid bids (təklifləri) silmək lazımdır (əgər foreign key varsa)
+    supabase.table("bids").delete().in_("order_id", order_ids).execute()
+    # Sonra sifarişin özünü silirik
+    supabase.table("orders").delete().in_("id", order_ids).execute()
+
 def update_user_password(username, new_password):
     """Şifrə yeniləyir"""
     response = supabase.table("users").select("*").eq("username", username).execute()
@@ -53,7 +60,8 @@ def find_column_by_keyword(columns, keywords):
     return None
 
 def detect_header_row(df_preview):
-    keywords = ['description', 'item', 'mal', 'ad', 'product', 'qty', 'quantity', 'say', 'amount']
+    # Açar sözlər (Sizin fayl üçün 'birim', 'sira' sözlərini də əlavə etdim)
+    keywords = ['description', 'item', 'mal', 'ad', 'product', 'qty', 'quantity', 'say', 'amount', 'birim', 'sira', 'sıra']
     for idx, row in df_preview.iterrows():
         row_text = " ".join(row.astype(str)).lower()
         match_count = sum(1 for k in keywords if k in row_text)
@@ -73,6 +81,7 @@ if 'current_user' not in st.session_state:
 with st.sidebar:
     st.title("🔐 Giriş Paneli")
 
+    # Admin Şifrə Bərpası
     with st.expander("🆘 Admin (Şifrə Sıfırla)"):
         with st.form("admin_reset_form"):
             master_key_input = st.text_input("Master Key", type="password")
@@ -94,13 +103,12 @@ with st.sidebar:
 
     st.divider()
 
+    # Login Sistemi
     if not st.session_state['logged_in']:
         users_list = ["Seçin...", "Admin", "Anar", "Samir", "Vüsal", "Orxan", "Elnur"]
         selected_user = st.selectbox("İşçi Adı", users_list)
 
         if selected_user != "Seçin...":
-            # Bazadan istifadəçini yoxla
-            # (Hər dəfə sorğu getməməsi üçün bunu formadan çöldə saxlayırıq)
             response = supabase.table("users").select("*").eq("username", selected_user).execute()
             user_data = response.data
 
@@ -109,19 +117,15 @@ with st.sidebar:
                 with st.form("register_form"):
                     new_pass = st.text_input("Yeni Şifrə Təyin Et", type="password")
                     submit_reg = st.form_submit_button("Qeydiyyatdan Keç")
-                    
                     if submit_reg:
                         add_row("users", {"username": selected_user, "password": new_pass})
                         st.success("Hazırdır! İndi giriş edin.")
                         time.sleep(1)
                         st.rerun()
             else:
-                # --- ENTER DÜYMƏSİ ÜÇÜN LOGIN FORMASI ---
                 with st.form("login_form"):
                     password = st.text_input("Şifrənizi yazın", type="password")
-                    # form_submit_button həm klikləyəndə, həm də Enter basanda işləyir
                     submit_login = st.form_submit_button("Daxil Ol 🚀")
-                    
                     if submit_login:
                         real_pass = user_data[0]['password']
                         if str(real_pass).strip() == str(password).strip():
@@ -147,8 +151,8 @@ if st.session_state['logged_in']:
     if user == "Admin":
         st.info("🔧 Admin Paneli (Supabase Gücü ilə ⚡)")
         
-        # --- EXCEL YÜKLƏMƏ ---
-        with st.expander("📂 Excel-dən Yüklə (Sürətli)", expanded=True):
+        # --- 1. EXCEL YÜKLƏMƏ ---
+        with st.expander("📂 Excel-dən Yüklə (Təkmilləşdirilmiş)", expanded=True):
             uploaded_file = st.file_uploader("Fayl Seç", type=["xlsx", "xls", "csv"])
             header_idx = 0 
             
@@ -158,7 +162,7 @@ if st.session_state['logged_in']:
                     if uploaded_file.name.endswith('.xls'):
                         file_engine = 'xlrd'
                     
-                    # 1. Preview
+                    # Preview
                     if uploaded_file.name.endswith('.csv'):
                         df_preview = pd.read_csv(uploaded_file, header=None, nrows=20)
                     else:
@@ -169,7 +173,7 @@ if st.session_state['logged_in']:
                     st.write(f"🤖 **Təxmin edilən başlıq sətri:** {detected_idx}")
                     header_idx = st.number_input("Başlıq Sətri Nömrəsi:", min_value=0, value=int(detected_idx), step=1)
 
-                    # 2. Real Oxuma
+                    # Real Oxuma
                     if uploaded_file.name.endswith('.csv'):
                         uploaded_file.seek(0)
                         df_final = pd.read_csv(uploaded_file, header=header_idx)
@@ -188,14 +192,17 @@ if st.session_state['logged_in']:
                     qty_col = c2.selectbox("Say:", cols, index=cols.index(def_qty) if def_qty else 0)
                     unit_col = c3.selectbox("Ölçü (Varsa):", ["-Yoxdur-"] + cols, index=cols.index(def_unit)+1 if def_unit else 0)
                     
+                    # --- NÜMUNƏ GÖSTƏRMƏK (Ən vacib hissə) ---
+                    st.caption(f"👀 Seçilmiş '{name_col}' sütunundakı ilk dəyərlər: {df_final[name_col].head(3).tolist()}")
+
                     if st.button("Sistemə Yüklə 📥"):
                         new_orders_list = []
-                        
                         count = 0
                         for index, row in df_final.iterrows():
                             prod_val = str(row[name_col])
                             invalid_words = ['nan', 'none', 'subtotal', 'total', 'grand total']
                             
+                            # Boşluqları təmizlə
                             if prod_val and prod_val.lower() not in invalid_words and prod_val.strip() != '':
                                 try:
                                     q_val = row[qty_col]
@@ -223,12 +230,12 @@ if st.session_state['logged_in']:
                             time.sleep(1)
                             st.rerun()
                         else:
-                            st.error("❌ Məlumat tapılmadı.")
+                            st.error("❌ Məlumat tapılmadı. Zəhmət olmasa 'Başlıq Sətri'ni düzgün seçin.")
 
                 except Exception as e:
                     st.error(f"Xəta: {e}")
 
-        # --- TƏK SİFARİŞ ---
+        # --- 2. TƏK SİFARİŞ YARAT ---
         with st.expander("➕ Tək Sifariş Yarat"):
             with st.form("add_single"):
                 c1, c2, c3 = st.columns([3, 1, 1])
@@ -245,6 +252,47 @@ if st.session_state['logged_in']:
                     })
                     st.toast("Əlavə olundu!")
                     st.rerun()
+
+        # --- 3. SİLİNMƏ PANELİ (YENİ) ---
+        with st.expander("🗑️ Sifarişləri Sil (Toplu)", expanded=False):
+            st.write("Silmək istədiyiniz malları seçin:")
+            
+            # Bazadan bütün aktivləri çəkirik
+            orders_resp = supabase.table("orders").select("id, product_name, qty").neq("status", "Tamamlandı").execute()
+            df_delete = pd.DataFrame(orders_resp.data)
+            
+            if not df_delete.empty:
+                # Seçim üçün format yaradiriq: "ID: Malın Adı (Say)"
+                df_delete['display_text'] = df_delete.apply(lambda x: f"[{x['id']}] {x['product_name']} ({x['qty']})", axis=1)
+                
+                selected_items = st.multiselect("Malları Seçin:", df_delete['display_text'].tolist())
+                
+                if selected_items:
+                    # Seçilən mətnlərdən ID-ləri çıxarırıq
+                    selected_ids = []
+                    for item in selected_items:
+                        # "[123] Mal" -> 123
+                        id_part = item.split(']')[0].replace('[', '')
+                        selected_ids.append(int(id_part))
+                    
+                    st.warning(f"{len(selected_ids)} ədəd mal silinəcək!")
+                    
+                    # Təsdiqləmə mexanizmi
+                    col_del1, col_del2 = st.columns([1, 4])
+                    if col_del1.button("❌ SİL"):
+                        st.session_state['confirm_delete_ids'] = selected_ids
+                    
+                    if 'confirm_delete_ids' in st.session_state and st.session_state['confirm_delete_ids'] == selected_ids:
+                        st.error("⚠️ Əminsiniz? Bu əməliyyat geri qaytarıla bilməz.")
+                        if st.button("Bəli, Əminəm - SİL"):
+                            delete_orders(selected_ids)
+                            st.success("Mallar silindi!")
+                            del st.session_state['confirm_delete_ids']
+                            time.sleep(1)
+                            st.rerun()
+            else:
+                st.info("Silinəcək aktiv mal yoxdur.")
+
         st.divider()
 
     c1, c2 = st.columns([8, 2])
@@ -301,7 +349,6 @@ if st.session_state['logged_in']:
                                 if not my_bid.empty:
                                     my_val = my_bid.iloc[-1]['price']
                             
-                            # FORM DAXİLİNDƏ OLMAMALIDIR (Hər sətir ayrıdır)
                             new_price = st.number_input("Qiymət (AZN)", value=float(my_val), step=1.0, key=f"inp_{oid}")
                             
                             if st.button("Göndər", key=f"btn_{oid}"):
