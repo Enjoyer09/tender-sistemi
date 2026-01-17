@@ -44,68 +44,61 @@ def update_user_password(username, new_password):
     else:
         add_row("users", {"username": username, "password": new_password})
 
-# --- İNTELLEKTUAL EXCEL FUNKSİYALARI (YENİ) ---
+def upload_image_to_supabase(file_obj, filename):
+    """Şəkli Supabase Storage-ə yükləyir və linkini qaytarır"""
+    try:
+        bucket_name = "images"
+        # Fayl adını unikal etmək üçün zaman damğası əlavə edirik
+        unique_name = f"{int(time.time())}_{filename}"
+        file_bytes = file_obj.getvalue()
+        
+        supabase.storage.from_(bucket_name).upload(
+            path=unique_name,
+            file=file_bytes,
+            file_options={"content-type": file_obj.type}
+        )
+        
+        # Public URL alırıq
+        public_url = supabase.storage.from_(bucket_name).get_public_url(unique_name)
+        return public_url
+    except Exception as e:
+        st.error(f"Yükləmə xətası: {e}")
+        return None
 
+def update_order_image(order_id, image_url):
+    """Şəklin linkini bazaya yazır"""
+    supabase.table("orders").update({"image_url": image_url}).eq("id", order_id).execute()
+
+# --- EXCEL ANALİZİ ---
 def detect_header_row(df_preview):
-    """
-    Başlıq sətrini tapmaq üçün həm açar sözlərə, həm də dolu xanalara baxır.
-    """
-    # Açar sözlər (Azərbaycan, İngilis, Rus, Türk)
-    keywords = ['description', 'item', 'mal', 'ad', 'product', 'qty', 'quantity', 'say', 'amount', 'birim', 'sira', 'sıra', 'no', 'ölçü', 'vahid', 'miqdar']
-    
-    best_row_idx = 0
-    max_score = 0
-    
+    keywords = ['description', 'item', 'mal', 'ad', 'product', 'qty', 'quantity', 'say', 'amount', 'birim', 'sira', 'sıra']
     for idx, row in df_preview.iterrows():
         row_text = " ".join(row.astype(str)).lower()
-        
-        # 1. Açar sözləri sayır
         match_count = sum(1 for k in keywords if k in row_text)
-        
-        # 2. Dolu xanaları sayır (Boş olmayan)
-        non_empty_count = row.count()
-        
-        # Hesablama: Açar sözlər daha vacibdir (*2), amma dolu xanalar da önəmlidir
-        score = (match_count * 2) + (non_empty_count * 0.5)
-        
-        if score > max_score:
-            max_score = score
-            best_row_idx = idx
-            
-    return best_row_idx
+        if match_count >= 2:
+            return idx
+    return 0
 
 def smart_column_guesser(df):
-    """
-    Sütunları avtomatik təyin etmək üçün məntiq
-    """
     cols = df.columns.tolist()
-    
-    # 1. Malın Adı üçün təxmin
-    # Məntiq: Adında 'mal','desc' olan VƏ YA 'Sıra' sütunundan sonrakı ilk mətn sütunu
     name_col_idx = 0
-    
-    # Əgər bir sütun adı 'Unnamed'dirsə və 2-ci sıradadırsa, böyük ehtimalla malın adıdır (Sizin fayl üçün)
     for i, col in enumerate(cols):
         col_str = str(col).lower()
         if 'mal' in col_str or 'desc' in col_str or 'ad' in col_str or 'ürün' in col_str:
             name_col_idx = i
             break
-        # Sizin fayl üçün xüsusi hal: Sütun adı boşdur (Unnamed) və 1-ci indeksdədir
         if 'unnamed' in col_str and i == 1:
             name_col_idx = i
             
-    # 2. Say üçün təxmin
     qty_col_idx = 0
     for i, col in enumerate(cols):
         col_str = str(col).lower()
-        # 'Sipariş' sözü 'Ambar'dan daha vacibdir
         if 'sipariş' in col_str or 'order' in col_str:
             qty_col_idx = i
             break
         elif 'qty' in col_str or 'say' in col_str or 'quan' in col_str or 'miktar' in col_str:
             qty_col_idx = i
     
-    # 3. Ölçü üçün təxmin
     unit_col_idx = None
     for i, col in enumerate(cols):
         col_str = str(col).lower()
@@ -191,17 +184,16 @@ with st.sidebar:
 if st.session_state['logged_in']:
     user = st.session_state['current_user']
     
-    # Databazanı çək
     response = supabase.table("orders").select("*").neq("status", "Tamamlandı").execute()
     orders_df = pd.DataFrame(response.data)
     if not orders_df.empty:
         orders_df = orders_df.sort_values(by="id", ascending=False)
     
-    # ---------------- ADMIN PANELI ----------------
+    # --- ADMIN PANELI ---
     if user == "Admin":
         st.info("🔧 Admin Paneli")
         
-        # --- EXCEL YÜKLƏMƏ (İNTELLEKTUAL) ---
+        # EXCEL YÜKLƏMƏ
         with st.expander("📂 Excel-dən Yüklə (Smart)", expanded=False):
             uploaded_file = st.file_uploader("Fayl Seç", type=["xlsx", "xls", "csv"])
             header_idx = 0 
@@ -212,33 +204,25 @@ if st.session_state['logged_in']:
                     if uploaded_file.name.endswith('.xls'):
                         file_engine = 'xlrd'
                     
-                    # 1. Preview oxumaq (Headersiz)
                     if uploaded_file.name.endswith('.csv'):
                         df_preview = pd.read_csv(uploaded_file, header=None, nrows=25)
                     else:
                         df_preview = pd.read_excel(uploaded_file, header=None, nrows=25, engine=file_engine)
                     
-                    # 2. Avtomatik Başlıq Sətrini Tap
                     detected_idx = detect_header_row(df_preview)
-                    
                     c_head1, c_head2 = st.columns([3, 1])
                     c_head1.write(f"🤖 Sistem cədvəlin **{detected_idx}-ci** sətirdən başladığını düşünür.")
                     header_idx = c_head2.number_input("Başlıq Sətri:", min_value=0, value=int(detected_idx), step=1)
 
-                    # 3. Əsl oxuma
                     if uploaded_file.name.endswith('.csv'):
                         uploaded_file.seek(0)
                         df_final = pd.read_csv(uploaded_file, header=header_idx)
                     else:
                         df_final = pd.read_excel(uploaded_file, header=header_idx, engine=file_engine)
 
-                    # --- ADSIZ SÜTUNLARI DÜZƏLTMƏK ---
-                    # Əgər faylda başlıq boşdursa (P.O faylındakı kimi), bura 'Unnamed' düşür.
-                    # Biz onu vizual olaraq düzəldirik.
                     new_columns = []
                     for i, col in enumerate(df_final.columns):
                         if "Unnamed" in str(col):
-                            # Əgər bu sütun doludursa, ona şərti ad verək
                             if not df_final.iloc[:, i].isnull().all():
                                 new_columns.append(f"Adsız Sütun {i} (Məlumat var)")
                             else:
@@ -248,21 +232,17 @@ if st.session_state['logged_in']:
                     df_final.columns = new_columns
 
                     st.dataframe(df_final.head(3), height=100)
-                    
-                    # 4. Sütunları Avtomatik Təxmin Etmək
                     cols = df_final.columns.tolist()
                     guess_name, guess_qty, guess_unit = smart_column_guesser(df_final)
 
                     c1, c2, c3 = st.columns(3)
                     name_col = c1.selectbox("Malın Adı:", cols, index=guess_name)
                     qty_col = c2.selectbox("Say:", cols, index=guess_qty)
-                    
                     unit_default = 0
                     if guess_unit is not None: unit_default = guess_unit
                     unit_col = c3.selectbox("Ölçü:", ["-Yoxdur-"] + cols, index=unit_default + 1 if guess_unit is not None else 0)
                     
-                    # Nümunə göstər ki, admin əmin olsun
-                    st.info(f"👀 Seçiminizə görə ilk mal: **{df_final[name_col].iloc[0]}** | Say: **{df_final[qty_col].iloc[0]}**")
+                    st.info(f"👀 Nümunə: **{df_final[name_col].iloc[0]}** | Say: **{df_final[qty_col].iloc[0]}**")
 
                     if st.button("Sistemə Yüklə 📥"):
                         new_orders_list = []
@@ -270,18 +250,12 @@ if st.session_state['logged_in']:
                         for index, row in df_final.iterrows():
                             prod_val = str(row[name_col])
                             invalid_words = ['nan', 'none', 'subtotal', 'total', 'grand total', 'talep eden', 'onay']
-                            
                             if prod_val and prod_val.lower() not in invalid_words and prod_val.strip() != '':
                                 try:
-                                    # Sayı təmizlə
                                     raw_qty = row[qty_col]
-                                    if pd.isna(raw_qty): 
-                                        q_val = 1.0
-                                    else:
-                                        # Bəzən "10.0" string kimi gəlir
-                                        q_val = float(raw_qty)
-                                except:
-                                    q_val = 1.0
+                                    if pd.isna(raw_qty): q_val = 1.0
+                                    else: q_val = float(raw_qty)
+                                except: q_val = 1.0
                                 
                                 u_val = ""
                                 if unit_col != "-Yoxdur-":
@@ -323,7 +297,7 @@ if st.session_state['logged_in']:
                     st.rerun()
         st.divider()
 
-    # ---------------- ƏSAS LIST ----------------
+    # --- ƏSAS EKRAN ---
     c1, c2 = st.columns([8, 2])
     c1.title(f"👤 {user} - Şəxsi Kabinet")
     if c2.button("🔄 Yenilə"):
@@ -339,7 +313,6 @@ if st.session_state['logged_in']:
             all_bids_df = pd.DataFrame(bids_resp.data)
 
             if user == "Admin":
-                # --- CHECKBOX MƏNTİQİ ---
                 def toggle_select_all():
                     val = st.session_state.get('master_select', False)
                     for oid in orders_df['id']:
@@ -363,7 +336,6 @@ if st.session_state['logged_in']:
                     else:
                         st.toast("Seçim edilməyib!")
 
-            # LİST
             for index, row in orders_df.iterrows():
                 oid = row['id']
                 prod = row['product_name']
@@ -371,10 +343,10 @@ if st.session_state['logged_in']:
                 unit = row.get('unit', '')
                 status = row['status']
                 winner_db = row.get('winner', '')
-                try:
-                    time_cr = pd.to_datetime(row['created_at']).strftime("%Y-%m-%d %H:%M")
-                except:
-                    time_cr = str(row['created_at'])[:16]
+                image_url = row.get('image_url', None) # Şəkil URL-i
+                
+                try: time_cr = pd.to_datetime(row['created_at']).strftime("%Y-%m-%d %H:%M")
+                except: time_cr = str(row['created_at'])[:16]
                 
                 if user == "Admin":
                     col_chk, col_content = st.columns([0.5, 9.5])
@@ -390,13 +362,33 @@ if st.session_state['logged_in']:
                     with st.container(border=border_color):
                         c_l, c_m, c_r = st.columns([2, 2, 3])
                         
+                        # --- 1. Məlumat və Şəkil ---
                         with c_l:
                             st.markdown(f"### 📦 {prod}")
                             st.write(f"**Tələb:** {qty} {unit}")
                             st.caption(f"Tarix: {time_cr}")
+                            
+                            # Şəkil varsa göstər
+                            if image_url:
+                                st.image(image_url, width=150)
+                            
+                            # Admin şəkli dəyişə bilər
+                            if user == "Admin":
+                                with st.popover("📷 Şəkil Yüklə"):
+                                    img_file = st.file_uploader(f"Şəkil seç ({oid})", type=['png', 'jpg', 'jpeg'], key=f"upl_{oid}")
+                                    if img_file and st.button("Yüklə", key=f"save_img_{oid}"):
+                                        with st.spinner("Yüklənir..."):
+                                            url = upload_image_to_supabase(img_file, img_file.name)
+                                            if url:
+                                                update_order_image(oid, url)
+                                                st.success("Yükləndi!")
+                                                time.sleep(1)
+                                                st.rerun()
+
                             if status == 'Təsdiqlənib':
                                 st.caption(f"🔒 Təsdiqləyən: Admin")
                         
+                        # --- 2. Qiymət ---
                         with c_m:
                             if status == 'Axtarışda':
                                 if user == "Admin":
@@ -418,6 +410,7 @@ if st.session_state['logged_in']:
                             else:
                                 st.warning("🔒 Satış Bağlandı.")
 
+                        # --- 3. Nəticə ---
                         with c_r:
                             st.write("📊 **Vəziyyət:**")
                             if not all_bids_df.empty:
@@ -427,7 +420,6 @@ if st.session_state['logged_in']:
                                     best_u = best_bid['user']
                                     best_p = best_bid['price']
                                     
-                                    # Lideri göstər
                                     st.write(f"🥇 **{best_u}** - {best_p} AZN")
 
                                     if status == 'Axtarışda':
@@ -439,7 +431,7 @@ if st.session_state['logged_in']:
                                             st.success("🏆 Lidersiniz!")
                                     elif status == 'Təsdiqlənib':
                                         if user == winner_db:
-                                            st.success("✅ Təsdiqləndi! Alın.")
+                                            st.success("✅ Təsdiqləndi!")
                                             if st.button("🛒 ALDIM", key=f"fin_{oid}", type="primary"):
                                                 update_order_stage(oid, 'Tamamlandı', user, best_p)
                                                 st.balloons()
@@ -483,6 +475,7 @@ if st.session_state['logged_in']:
         history_df = pd.DataFrame(response.data)
         if not history_df.empty:
             cols_to_show = ['product_name', 'qty', 'unit', 'winner', 'final_price', 'created_at']
+            # Image URL varsa tarixçədə də göstərmək olar
             existing_cols = [c for c in cols_to_show if c in history_df.columns]
             st.table(history_df[existing_cols])
         else:
