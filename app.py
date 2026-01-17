@@ -65,6 +65,31 @@ def upload_image_to_supabase(file_obj, filename):
 def update_order_image(order_id, image_url):
     supabase.table("orders").update({"image_url": image_url}).eq("id", order_id).execute()
 
+# --- POPUP (MODAL) SİLMƏ PƏNCƏRƏSİ ---
+@st.dialog("⚠️ Silməni Təsdiqləyin")
+def confirm_delete_modal(ids_to_delete):
+    st.warning(f"Seçilmiş **{len(ids_to_delete)}** ədəd malı bazadan silmək istədiyinizə əminsiniz?")
+    st.write("Bu əməliyyat geri qaytarıla bilməz.")
+    
+    col1, col2 = st.columns(2)
+    
+    if col1.button("✅ Bəli, SİL", type="primary"):
+        with st.spinner("Silinir..."):
+            delete_orders(ids_to_delete)
+        st.success("Mallar uğurla silindi!")
+        
+        # Checkbox-ları təmizləmək
+        if 'master_select' in st.session_state: del st.session_state['master_select']
+        for oid in ids_to_delete:
+            key = f"chk_{oid}"
+            if key in st.session_state: del st.session_state[key]
+            
+        time.sleep(1)
+        st.rerun()
+        
+    if col2.button("❌ Ləğv et"):
+        st.rerun()
+
 # --- EXCEL ANALİZİ ---
 def detect_header_row(df_preview):
     keywords = ['description', 'item', 'mal', 'ad', 'product', 'qty', 'quantity', 'say', 'amount', 'birim', 'sira', 'sıra']
@@ -324,11 +349,11 @@ if st.session_state['logged_in']:
                 c_master, c_btn = st.columns([2, 10])
                 c_master.checkbox("☑️ Hamısını Seç", key="master_select", on_change=toggle_select_all)
                 
+                # --- YUXARI SİL DÜYMƏSİ (POPUP İLƏ) ---
                 if c_btn.button("🗑️ Seçilənləri Sil (Üst)", type="primary"):
                     ids_to_del = get_selected_ids()
                     if ids_to_del:
-                        st.session_state['confirm_del_ids'] = ids_to_del
-                        st.rerun()
+                        confirm_delete_modal(ids_to_del) # POPUP AÇILIR
                     else:
                         st.toast("Seçim edilməyib!")
 
@@ -440,30 +465,13 @@ if st.session_state['logged_in']:
 
             if user == "Admin":
                 st.write("---")
+                # --- AŞAĞI SİL DÜYMƏSİ (POPUP İLƏ) ---
                 if st.button("🗑️ Seçilənləri Sil (Alt)", type="primary"):
                     ids_to_del = get_selected_ids()
                     if ids_to_del:
-                        st.session_state['confirm_del_ids'] = ids_to_del
-                        st.rerun()
+                        confirm_delete_modal(ids_to_del) # POPUP AÇILIR
                     else:
                         st.toast("Seçim edilməyib!")
-
-                if 'confirm_del_ids' in st.session_state:
-                    ids = st.session_state['confirm_del_ids']
-                    st.warning(f"⚠️ {len(ids)} ədəd malı silməyə əminsiniz?")
-                    c_yes, c_no = st.columns(2)
-                    if c_yes.button("✅ Bəli, SİL"):
-                        delete_orders(ids)
-                        st.success("Silindi!")
-                        del st.session_state['confirm_del_ids']
-                        # DÜZƏLİŞ: Silməkdən sonra checkbox dəyərini məcburi False etmək xəta verir
-                        # Ona görə session-dan silirik, yenilənəndə sıfırlanır
-                        if 'master_select' in st.session_state: del st.session_state['master_select']
-                        time.sleep(1)
-                        st.rerun()
-                    if c_no.button("❌ Xeyr"):
-                        del st.session_state['confirm_del_ids']
-                        st.rerun()
 
     with tab2:
         st.subheader("Bitmiş Tenderlər")
